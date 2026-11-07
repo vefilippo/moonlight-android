@@ -245,6 +245,98 @@ public class UacDescriptorParserTest {
         assertNull(UacDescriptorParser.parse(raw));
     }
 
+    /**
+     * G435 topology (decoded from the dump): IT 1 (microphone) -> FU 2 -> OT 3 (USB streaming,
+     * capture terminalLink 3); IT 4 (USB streaming, playback terminalLink 4) -> FU 5 -> OT 6 (headset).
+     */
+    @Test
+    public void g435PlaybackVolumeUnitIsFu5() {
+        UacDescriptors d = UacDescriptorParser.parse(fixture("g435_descriptors.hex"));
+        assertNotNull(d);
+        AltSetting out = first(d, false), in = first(d, true);
+        assertEquals(4, out.terminalLink);
+        assertEquals(3, in.terminalLink);
+        assertEquals(1, d.featureUnits.get(0).sourceId);
+        assertEquals(4, d.featureUnits.get(1).sourceId);
+        UacDescriptors.FeatureUnit fu = d.playbackVolumeUnit(out.terminalLink, in.terminalLink);
+        assertNotNull(fu);
+        assertEquals(5, fu.unitId);
+    }
+
+    @Test
+    public void uac1HeadsetPlaybackVolumeUnitIsFu2() {
+        UacDescriptors d = UacDescriptorParser.parse(fixture("uac1_headset_descriptors.hex"));
+        assertNotNull(d);
+        AltSetting out = first(d, false), in = first(d, true);
+        UacDescriptors.FeatureUnit fu = d.playbackVolumeUnit(out.terminalLink, in.terminalLink);
+        assertNotNull(fu);
+        assertEquals(2, fu.unitId);
+    }
+
+    /** IT 1 -> selector 7 (inputs 9, 1) -> FU 8 -> OT 3; mic IT 4 -> FU 5 -> OT 6. */
+    @Test
+    public void playbackVolumeUnitFollowsChainThroughSelector() {
+        byte[] raw = bytes(
+            new int[]{0x09, 0x02, 0x00, 0x00, 0x02, 0x01, 0x00, 0x80, 0x32},
+            new int[]{0x09, 0x04, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00},
+            new int[]{0x09, 0x24, 0x01, 0x00, 0x01, 0x40, 0x00, 0x01, 0x01},
+            new int[]{0x0C, 0x24, 0x02, 0x04, 0x01, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00}, // IT 4 mic
+            new int[]{0x09, 0x24, 0x06, 0x05, 0x04, 0x01, 0x03, 0x00, 0x00},                // FU 5 <- 4
+            new int[]{0x09, 0x24, 0x03, 0x06, 0x01, 0x01, 0x00, 0x05, 0x00},                // OT 6 <- 5
+            new int[]{0x0C, 0x24, 0x02, 0x01, 0x01, 0x01, 0x00, 0x02, 0x03, 0x00, 0x00, 0x00}, // IT 1 stream
+            new int[]{0x08, 0x24, 0x05, 0x07, 0x02, 0x09, 0x01, 0x00},                      // SU 7 <- 9, 1
+            new int[]{0x09, 0x24, 0x06, 0x08, 0x07, 0x01, 0x03, 0x00, 0x00},                // FU 8 <- 7
+            new int[]{0x09, 0x24, 0x03, 0x03, 0x01, 0x03, 0x00, 0x08, 0x00},                // OT 3 <- 8
+            new int[]{0x09, 0x04, 0x01, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00},
+            new int[]{0x09, 0x04, 0x01, 0x01, 0x01, 0x01, 0x02, 0x00, 0x00},
+            new int[]{0x07, 0x24, 0x01, 0x01, 0x01, 0x01, 0x00},
+            new int[]{0x0B, 0x24, 0x02, 0x01, 0x02, 0x02, 0x10, 0x01, 0x80, 0xBB, 0x00},
+            new int[]{0x09, 0x05, 0x01, 0x09, 0xC0, 0x00, 0x01, 0x00, 0x00}
+        );
+        UacDescriptors d = UacDescriptorParser.parse(raw);
+        assertNotNull(d);
+        assertEquals(8, d.playbackVolumeUnit(1, 6).unitId);
+        assertTrue(d.reaches(3, 1));
+        assertFalse(d.reaches(3, 4));
+    }
+
+    @Test
+    public void playbackVolumeUnitFallsBackToFirstNonCaptureUnitWithVolume() {
+        UacDescriptors d = new UacDescriptors();
+        UacDescriptors.FeatureUnit mic = fu(d, 2, 1, true);
+        fu(d, 5, 99, false); // no volume control
+        UacDescriptors.FeatureUnit other = fu(d, 7, 98, true);
+        d.unitSources.put(3, new int[]{2}); // OT 3 <- FU 2 (capture path)
+        // playback terminal 4 is not connected to anything known
+        assertEquals(other, d.playbackVolumeUnit(4, 3));
+        // without a capture terminal the first unit with volume wins
+        assertEquals(mic, d.playbackVolumeUnit(4, -1));
+        // capture-path unit only: none
+        UacDescriptors only = new UacDescriptors();
+        fu(only, 2, 1, true);
+        only.unitSources.put(3, new int[]{2});
+        assertNull(only.playbackVolumeUnit(4, 3));
+    }
+
+    @Test
+    public void reachesSurvivesCycles() {
+        UacDescriptors d = new UacDescriptors();
+        d.unitSources.put(1, new int[]{2});
+        d.unitSources.put(2, new int[]{1});
+        assertFalse(d.reaches(1, 3));
+        assertTrue(d.reaches(1, 2));
+    }
+
+    private static UacDescriptors.FeatureUnit fu(UacDescriptors d, int id, int src, boolean vol) {
+        UacDescriptors.FeatureUnit f = new UacDescriptors.FeatureUnit();
+        f.unitId = id;
+        f.sourceId = src;
+        f.hasMasterVolume = vol;
+        d.featureUnits.add(f);
+        d.unitSources.put(id, new int[]{src});
+        return f;
+    }
+
     @Test
     public void toHexFormatsBytes() {
         assertEquals("12 01 ff", UacDescriptorParser.toHex(new byte[]{0x12, 0x01, (byte) 0xFF}));

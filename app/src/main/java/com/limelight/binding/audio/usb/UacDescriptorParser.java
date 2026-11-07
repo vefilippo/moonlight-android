@@ -24,6 +24,8 @@ public final class UacDescriptorParser {
     private static final int AC_HEADER = 0x01;
     private static final int AC_INPUT_TERMINAL = 0x02;
     private static final int AC_OUTPUT_TERMINAL = 0x03;
+    private static final int AC_MIXER_UNIT = 0x04;
+    private static final int AC_SELECTOR_UNIT = 0x05;
     private static final int AC_FEATURE_UNIT = 0x06;
     private static final int AC_CLOCK_SOURCE = 0x0A;
 
@@ -123,10 +125,22 @@ public final class UacDescriptorParser {
                 break;
             case AC_OUTPUT_TERMINAL:
                 if (uac2) terminalClock.put(u8(raw, pos, 3), u8(raw, pos, 8));
+                // bSourceID at 7 in both UAC1 and UAC2
+                if (len >= 8) {
+                    result.outputTerminals.add(u8(raw, pos, 3));
+                    result.unitSources.put(u8(raw, pos, 3), new int[]{u8(raw, pos, 7)});
+                }
+                break;
+            case AC_MIXER_UNIT:
+            case AC_SELECTOR_UNIT:
+                // bNrInPins at 4, baSourceID from 5
+                putSources(result, raw, pos, len, 4);
                 break;
             case AC_FEATURE_UNIT: {
                 UacDescriptors.FeatureUnit fu = new UacDescriptors.FeatureUnit();
                 fu.unitId = u8(raw, pos, 3);
+                fu.sourceId = u8(raw, pos, 4);
+                if (len >= 5) result.unitSources.put(fu.unitId, new int[]{fu.sourceId});
                 if (uac2) {
                     // bmaControls[0] is a 32-bit bitmap, 2 bits per control, at offset 5
                     if (len >= 9) {
@@ -145,9 +159,33 @@ public final class UacDescriptorParser {
                 result.featureUnits.add(fu);
                 break;
             }
+            case 0x07: // UAC1 processing unit; UAC2 effect unit (bSourceID at 6)
+                if (uac2) {
+                    if (len >= 7) result.unitSources.put(u8(raw, pos, 3), new int[]{u8(raw, pos, 6)});
+                } else {
+                    putSources(result, raw, pos, len, 6);
+                }
+                break;
+            case 0x08: // UAC1 extension unit; UAC2 processing unit
+            case 0x09: // UAC2 extension unit
+                if (uac2 || subtype == 0x08) putSources(result, raw, pos, len, 6);
+                break;
+            case 0x0D: // UAC2 sample rate converter (bSourceID at 4)
+                if (uac2 && len >= 5) result.unitSources.put(u8(raw, pos, 3), new int[]{u8(raw, pos, 4)});
+                break;
             default:
                 break;
         }
+    }
+
+    /** Records a unit's bNrInPins source IDs (count at nrOff, IDs follow), bounded by the descriptor. */
+    private static void putSources(UacDescriptors result, byte[] raw, int pos, int len, int nrOff) {
+        if (len <= nrOff) return;
+        int n = Math.min(u8(raw, pos, nrOff), len - nrOff - 1);
+        if (n <= 0) return;
+        int[] src = new int[n];
+        for (int i = 0; i < n; i++) src[i] = u8(raw, pos, nrOff + 1 + i);
+        result.unitSources.put(u8(raw, pos, 3), src);
     }
 
     /** @return true if this descriptor established a Type I PCM format for the alt setting. */
