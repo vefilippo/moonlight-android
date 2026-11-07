@@ -99,6 +99,54 @@ public class UacDescriptorParserTest {
         }
     }
 
+    /** Real descriptors of a Logitech G435 receiver (UAC1, two HID interfaces 0 and 4). */
+    @Test
+    public void parsesG435() {
+        UacDescriptors d = UacDescriptorParser.parse(fixture("g435_descriptors.hex"));
+        assertNotNull(d);
+        assertEquals(1, d.uacVersion);
+        assertEquals(1, d.controlInterface);
+        assertEquals(2, d.altSettings.size());
+        for (AltSetting a : d.altSettings) {
+            assertNotEquals(0, a.interfaceNumber); // HID
+            assertNotEquals(4, a.interfaceNumber); // HID
+            assertNotEquals(0, a.alternateSetting);
+        }
+
+        AltSetting out = first(d, false);
+        assertNotNull(out);
+        assertEquals(3, out.interfaceNumber);
+        assertEquals(1, out.alternateSetting);
+        assertEquals(2, out.channels);
+        assertEquals(2, out.subframeBytes);
+        assertEquals(16, out.bitResolution);
+        assertTrue(out.supportsRate(48000));
+        assertFalse(out.supportsRate(44100));
+        assertEquals(0x06, out.endpointAddress);
+        assertEquals(208, out.maxPacketBytes);
+        assertEquals(1, out.bInterval);
+        assertEquals(3, out.syncType);
+        assertEquals(0, out.feedbackEndpointAddress);
+
+        AltSetting in = first(d, true);
+        assertNotNull(in);
+        assertEquals(2, in.interfaceNumber);
+        assertEquals(1, in.alternateSetting);
+        assertEquals(1, in.channels);
+        assertEquals(2, in.subframeBytes);
+        assertEquals(16, in.bitResolution);
+        assertTrue(in.supportsRate(48000));
+        assertEquals(0x87, in.endpointAddress);
+        assertEquals(104, in.maxPacketBytes);
+        assertEquals(3, in.syncType);
+
+        assertEquals(2, d.featureUnits.size());
+        for (UacDescriptors.FeatureUnit fu : d.featureUnits) {
+            assertTrue(fu.hasMasterMute);
+            assertTrue(fu.hasMasterVolume);
+        }
+    }
+
     // Synthetic UAC2 headset: IAD, AC header, clock source, terminals, one async OUT alt with feedback.
     private static byte[] uac2() {
         return bytes(
