@@ -8,6 +8,8 @@ import android.os.SystemClock;
 
 import com.limelight.LimeLog;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -16,7 +18,9 @@ import java.util.List;
  * the wheel on a daemon thread. stop() hands the interface back: releaseInterface makes
  * Android reconnect the kernel HID driver.
  *
- * Only an interface whose report descriptor has a volume usage in an Input report is claimed.
+ * Only an interface whose report descriptor has a volume usage in an Input report stays claimed;
+ * other HID interfaces (never boot keyboards/mice) are at most claimed briefly to read their
+ * report descriptor when it cannot be read otherwise, and released at once.
  * The reader only uses its own interrupt endpoint, so it can share the connection with the
  * audio engine. Lifecycle is owned by UsbHeadset (start after streaming starts, stop in close).
  */
@@ -56,8 +60,14 @@ final class UsbHidVolumeReader {
     }
 
     /**
-     * Finds the volume HID interface, claims it and starts reading. Returns null (claiming
-     * nothing) if there is none or anything fails.
+     * Finds the volume HID interface, claims it and starts reading. Returns null (holding no
+     * claim) if there is none or anything fails.
+     *
+     * First every HID interface's report descriptor is read without claiming. Only if that finds
+     * no volume interface are the interfaces whose descriptor could not be read probed: claimed,
+     * read, and released again at once unless they carry the volume usages. Boot keyboards and
+     * mice are never probed. Called only on Android TV, under the headset's read lock, so
+     * UsbHeadset.close() cannot run during the probe.
      */
     static UsbHidVolumeReader start(UsbDevice device, UsbDeviceConnection conn, byte[] rawDescriptors,
                                     Sink sink) {
@@ -66,49 +76,121 @@ final class UsbHidVolumeReader {
             LimeLog.info("UsbAudio: no HID interface with an interrupt IN endpoint; wheel not taken over");
             return null;
         }
+        List<HidInterfaces.Info> unread = new ArrayList<>();
         for (HidInterfaces.Info info : hids) {
             UsbInterface intf = findInterface(device, info.interfaceNumber);
             if (intf == null) continue;
             byte[] report = readReportDescriptor(conn, intf, info);
-            if (report == null) continue;
+            if (report == null) {
+                unread.add(info);
+                continue;
+            }
             HidVolumeLayout layout = HidVolumeReportParser.parse(report);
             if (layout == null) {
                 LimeLog.info("UsbAudio: HID interface " + info.interfaceNumber + " has no volume usage");
                 continue;
             }
+            return claimAndStart(conn, intf, info, report, layout, sink, false);
+        }
+        for (HidInterfaces.Info info : unread) {
+            if (info.isBootKeyboardOrMouse()) {
+                LimeLog.info("UsbAudio: not probing HID interface " + info.interfaceNumber
+                        + " (boot keyboard/mouse)");
+                continue;
+            }
+            UsbInterface intf = findInterface(device, info.interfaceNumber);
+            if (intf == null) continue;
+            UsbHidVolumeReader r = probe(conn, intf, info, sink);
+            if (r != null) return r;
+        }
+        LimeLog.info("UsbAudio: no HID volume interface found; wheel not taken over");
+        return null;
+    }
+
+    /**
+     * Claims the interface (detaching the kernel driver), reads its report descriptor and keeps
+     * the claim only if it carries the volume usages; otherwise releases it at once, which lets
+     * Android reconnect the kernel driver. Every path that does not hand the claim to a running
+     * reader releases it, exceptions included.
+     */
+    private static UsbHidVolumeReader probe(UsbDeviceConnection conn, UsbInterface intf,
+                                            HidInterfaces.Info info, Sink sink) {
+        if (!claim(conn, intf)) {
+            LimeLog.warning("UsbAudio: probe: cannot claim HID interface " + info.interfaceNumber);
+            return null;
+        }
+        boolean handedOff = false;
+        try {
+            int len = info.reportDescriptorLength;
+            if (len <= 0 || len > MAX_REPORT_DESCRIPTOR) return null;
+            byte[] buf = new byte[len];
+            int r = conn.controlTransfer(0x81, 0x06, 0x2200, info.interfaceNumber, buf, len,
+                    CONTROL_TIMEOUT_MS);
+            LimeLog.info("UsbAudio: probe HID interface " + info.interfaceNumber + ": " + r + "/" + len
+                    + (r > 0 ? " report=" + UacDescriptorParser.toHex(Arrays.copyOf(buf, r)) : ""));
+            if (r != len) return null;
+            HidVolumeLayout layout = HidVolumeReportParser.parse(buf);
+            if (layout == null) {
+                LimeLog.info("UsbAudio: probe: HID interface " + info.interfaceNumber + " has no volume usage");
+                return null;
+            }
+            handedOff = true; // claimAndStart releases it itself if it cannot start
+            return claimAndStart(conn, intf, info, buf, layout, sink, true);
+        } catch (RuntimeException e) {
+            LimeLog.warning("UsbAudio: probe of HID interface " + info.interfaceNumber + " failed: " + e);
+            return null;
+        } finally {
+            if (!handedOff) {
+                releaseQuietly(conn, intf);
+                LimeLog.info("UsbAudio: probe: released HID interface " + info.interfaceNumber);
+            }
+        }
+    }
+
+    private static boolean claim(UsbDeviceConnection conn, UsbInterface intf) {
+        try {
+            return conn.claimInterface(intf, true);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** Claims (unless already claimed) and starts the reader; on any failure nothing stays claimed. */
+    private static UsbHidVolumeReader claimAndStart(UsbDeviceConnection conn, UsbInterface intf,
+                                                    HidInterfaces.Info info, byte[] report,
+                                                    HidVolumeLayout layout, Sink sink, boolean claimed) {
+        boolean started = false;
+        try {
             UsbEndpoint ep = findEndpoint(intf, info.inEndpointAddress);
             if (ep == null) {
                 LimeLog.warning("UsbAudio: HID endpoint 0x" + Integer.toHexString(info.inEndpointAddress)
                         + " not found on interface " + info.interfaceNumber);
                 return null;
             }
-            boolean claimed;
-            try {
-                claimed = conn.claimInterface(intf, true);
-            } catch (RuntimeException e) {
-                claimed = false;
-            }
             if (!claimed) {
-                LimeLog.warning("UsbAudio: cannot claim HID interface " + info.interfaceNumber
-                        + "; wheel not taken over");
-                return null;
+                claimed = claim(conn, intf);
+                if (!claimed) {
+                    LimeLog.warning("UsbAudio: cannot claim HID interface " + info.interfaceNumber
+                            + "; wheel not taken over");
+                    return null;
+                }
             }
             LimeLog.info("UsbAudio: took over HID interface " + info.interfaceNumber + " ep=0x"
                     + Integer.toHexString(info.inEndpointAddress) + " mps=" + info.inMaxPacketSize
                     + " layout[" + layout + "] report=" + UacDescriptorParser.toHex(report));
             UsbHidVolumeReader r = new UsbHidVolumeReader(conn, intf, ep, layout, sink);
-            try {
-                r.thread.start();
-            } catch (RuntimeException | OutOfMemoryError e) {
-                LimeLog.warning("UsbAudio: cannot start HID reader: " + e);
-                r.running = false;
-                r.release();
-                return null;
-            }
+            r.thread.start();
+            started = true;
             return r;
+        } catch (RuntimeException | OutOfMemoryError e) {
+            LimeLog.warning("UsbAudio: cannot start HID reader: " + e);
+            return null;
+        } finally {
+            if (!started && claimed) {
+                releaseQuietly(conn, intf);
+                LimeLog.info("UsbAudio: released HID interface " + info.interfaceNumber);
+            }
         }
-        LimeLog.info("UsbAudio: no HID volume interface found; wheel not taken over");
-        return null;
     }
 
     private static UsbInterface findInterface(UsbDevice device, int number) {

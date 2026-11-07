@@ -142,8 +142,13 @@ existing microphone-streaming feature.
 - **Headset wheel on Android TV via HID takeover (2026-11-07):** on leanback
   devices only, while Artemis has the headset open and a stream has started,
   Artemis claims the one HID interface whose report descriptor has Consumer
-  Volume Increment/Decrement in an Input report (no other HID interface is
-  ever claimed), reads the wheel from its interrupt endpoint and steps the
+  Volume Increment/Decrement in an Input report and keeps it. Other HID
+  interfaces are claimed only briefly, to read the report descriptor, on
+  Android TV: when the descriptor cannot be read without a claim (Linux
+  refuses that while the kernel HID driver is bound), each non-boot HID
+  interface is claimed, read and released again at once unless it carries
+  the volume usages; boot keyboards/mice are never claimed. Artemis reads
+  the wheel from the kept interface's interrupt endpoint and steps the
   same per-headset gain, showing "Headset volume N%". When the headset is
   closed (stream end, unplug, failure) the interface is released, which hands
   it back to Android's HID driver. This revises the anti-goal "stealing the
