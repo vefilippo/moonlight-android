@@ -122,7 +122,8 @@ final class UsbHeadset {
 
     private static final class OpenFailure extends Exception {
         OpenFailure() {
-            super(null, null, false, false);
+            // Exception(String, Throwable, boolean, boolean) is API 24; minSdk is 21.
+            super("UsbAudio: open failed");
         }
     }
 

@@ -248,6 +248,99 @@ public class UsbAudioRendererTest {
         assertTrue("bytes=" + actual, Math.abs(actual - expected) <= 8);
     }
 
+    /** Plays one frame at now += stepMs and returns how many outputs have been opened. */
+    private int playAfter(long stepMs) {
+        now += stepMs;
+        renderer.playDecodedAudio(new short[480]);
+        return provider.outputs;
+    }
+
+    @Test
+    public void failedOpensBackOffExponentially() {
+        provider.ready = true;
+        provider.startResult = false;
+        renderer.setup(STEREO, 48000, 240); // attempt 1 fails -> next in 1 s
+        renderer.start();
+        assertEquals(1, provider.outputs);
+
+        assertEquals(1, playAfter(999));
+        assertEquals(2, playAfter(1));    // +1000: attempt 2 fails -> next in 2 s
+        assertEquals(2, playAfter(1999));
+        assertEquals(3, playAfter(1));    // +2000: attempt 3 -> next in 4 s
+        assertEquals(3, playAfter(3999));
+        assertEquals(4, playAfter(1));    // +4000
+
+        // Keeps doubling up to the 30 s cap: 8 s, 16 s, 30 s, 30 s
+        assertEquals(5, playAfter(8000));
+        assertEquals(6, playAfter(16000));
+        assertEquals(6, playAfter(29999));
+        assertEquals(7, playAfter(1));
+        assertEquals(7, playAfter(29999));
+        assertEquals(8, playAfter(1));
+        assertEquals(0, fallback.stopCalls);
+    }
+
+    @Test
+    public void notReadyPollingDoesNotBackOff() {
+        provider.ready = false;
+        renderer.setup(STEREO, 48000, 240);
+        renderer.start();
+        for (int i = 0; i < 10; i++) playAfter(600);
+        provider.ready = true;
+        assertEquals(1, playAfter(500));
+    }
+
+    @Test
+    public void availabilityChangeResetsBackoff() {
+        provider.ready = true;
+        provider.startResult = false;
+        renderer.setup(STEREO, 48000, 240);
+        renderer.start();
+        playAfter(1000); // attempt 2 -> next in 2 s
+        playAfter(2000); // attempt 3 -> next in 4 s
+        assertEquals(3, provider.outputs);
+
+        provider.generation++;
+        provider.startResult = true;
+        assertEquals(4, playAfter(500)); // reset to 500 ms
+        assertTrue(provider.output.started);
+        assertEquals(1, fallback.cleanupCalls);
+    }
+
+    @Test
+    public void successResetsBackoff() {
+        provider.ready = true;
+        provider.startResult = false;
+        renderer.setup(STEREO, 48000, 240);
+        renderer.start();
+        playAfter(1000); // -> next in 2 s
+        provider.startResult = true;
+        assertEquals(3, playAfter(2000)); // succeeds
+        provider.output.writeResult = -5; // stream lost -> fallback
+        playAfter(0);
+        provider.startResult = false;
+        assertEquals(4, playAfter(500)); // back at 500 ms after the success
+    }
+
+    @Test
+    public void statsAreLoggedEveryTenSecondsOnUsb() {
+        provider.ready = true;
+        renderer.setup(STEREO, 48000, 240);
+        renderer.start();
+        FakeOutput out = provider.output;
+
+        playAfter(5000);
+        assertEquals(0, out.statsCalls);
+        playAfter(4999);
+        assertEquals(0, out.statsCalls);
+        playAfter(1);
+        assertEquals(1, out.statsCalls);
+        playAfter(9999);
+        assertEquals(1, out.statsCalls);
+        playAfter(1);
+        assertEquals(2, out.statsCalls);
+    }
+
     // ---- Fakes ----
 
     private static final class FakeOutput implements UsbAudioRenderer.PlaybackOutput {
@@ -258,6 +351,7 @@ public class UsbAudioRendererTest {
         boolean alive = true;
         int writeResult = Integer.MIN_VALUE; // MIN_VALUE: accept everything
         int closeCalls;
+        int statsCalls;
 
         FakeOutput(UacStreamConfig config) {
             this.config = config;
@@ -274,6 +368,7 @@ public class UsbAudioRendererTest {
         }
 
         @Override public boolean isAlive() { return alive; }
+        @Override public String stats() { statsCalls++; return "fake"; }
         @Override public void close() { closeCalls++; }
     }
 
@@ -283,9 +378,11 @@ public class UsbAudioRendererTest {
         float gain = 1.0f;
         int rate = 48000;
         int outputs;
+        int generation;
         FakeOutput output;
 
         @Override public boolean isHeadsetReady() { return ready; }
+        @Override public int availabilityGeneration() { return generation; }
 
         @Override
         public UsbAudioRenderer.PlaybackOutput openPlayback() {

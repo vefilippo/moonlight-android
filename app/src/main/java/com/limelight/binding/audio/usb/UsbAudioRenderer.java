@@ -18,6 +18,10 @@ public class UsbAudioRenderer implements AudioRenderer {
     private static final int MAX_INPUT_CHANNELS = 8;
     /** How often the fallback path polls for a usable headset. */
     static final long RECHECK_INTERVAL_MS = 500;
+    /** Cap for the doubling retry delay after consecutive failed USB opens. */
+    static final long MAX_RECHECK_INTERVAL_MS = 30_000;
+    /** How often USB playback statistics are logged while on USB. */
+    static final long STATS_INTERVAL_MS = 10_000;
 
     /** One acquired playback stream. close() releases it and is called exactly once. */
     public interface PlaybackOutput {
@@ -26,6 +30,8 @@ public class UsbAudioRenderer implements AudioRenderer {
         /** Bytes accepted, or negative if the stream is gone/closed. */
         int write(byte[] data, int length);
         boolean isAlive();
+        /** One-line driver statistics, for logging. */
+        String stats();
         void close();
     }
 
@@ -34,6 +40,8 @@ public class UsbAudioRenderer implements AudioRenderer {
         /** Nullable. */
         PlaybackOutput openPlayback();
         float currentGain();
+        /** Changes whenever headset availability may have changed; resets the retry backoff. */
+        int availabilityGeneration();
     }
 
     /**
@@ -66,9 +74,16 @@ public class UsbAudioRenderer implements AudioRenderer {
     private short[] resampleBuf;
     private byte[] packBuf;
 
+    private long lastStatsMs;
+
     // Fallback path
     private boolean fallbackSetUp;
     private long lastCheckMs;
+    /** Current USB retry delay: doubles after each failed open, reset on success or a new generation. */
+    private long retryDelayMs = RECHECK_INTERVAL_MS;
+    private int generation;
+    /** The last tryOpenUsb got past the readiness check (a real open attempt). */
+    private boolean openAttempted;
 
     public UsbAudioRenderer(PlaybackProvider provider, AudioRenderer fallback, LongSupplier clockMs) {
         this.provider = provider;
@@ -83,7 +98,7 @@ public class UsbAudioRenderer implements AudioRenderer {
         this.samplesPerFrame = samplesPerFrame;
         this.inChannels = Math.max(1, Math.min(MAX_INPUT_CHANNELS, audioConfiguration.channelCount));
 
-        if (tryOpenUsb()) {
+        if (openUsbWithBackoff()) {
             return 0;
         }
         lastCheckMs = clockMs.getAsLong();
@@ -134,11 +149,30 @@ public class UsbAudioRenderer implements AudioRenderer {
 
     // ---- USB path ----
 
+    /**
+     * tryOpenUsb plus retry backoff: a real attempt that fails doubles the delay before the next
+     * one (capped); success resets it. Not-ready checks are cheap and do not back off.
+     */
+    private boolean openUsbWithBackoff() {
+        generation = provider.availabilityGeneration();
+        if (tryOpenUsb()) {
+            retryDelayMs = RECHECK_INTERVAL_MS;
+            return true;
+        }
+        if (openAttempted) {
+            retryDelayMs = Math.min(retryDelayMs * 2, MAX_RECHECK_INTERVAL_MS);
+            LimeLog.info("UsbAudio: USB playback open failed; next attempt in " + retryDelayMs + " ms");
+        }
+        return false;
+    }
+
     /** Opens and starts a USB output and sizes the buffers for it. Never throws. */
     private boolean tryOpenUsb() {
         PlaybackOutput out = null;
+        openAttempted = false;
         try {
             if (!provider.isHeadsetReady()) return false;
+            openAttempted = true;
             out = provider.openPlayback();
             if (out == null) return false;
             UacStreamConfig cfg = out.config();
@@ -148,6 +182,7 @@ public class UsbAudioRenderer implements AudioRenderer {
             }
             configureBuffers(cfg);
             output = out;
+            lastStatsMs = clockMs.getAsLong();
             LimeLog.info("UsbAudio: game audio on USB headset (" + cfg.sampleRate + " Hz, "
                     + devChannels + " ch, " + (subframeBytes * 8) + " bit)");
             return true;
@@ -196,10 +231,23 @@ public class UsbAudioRenderer implements AudioRenderer {
                 int len = PcmConverter.pack(resampleBuf, outFrames * devChannels, subframeBytes, gain, packBuf);
                 if (len > 0 && out.write(packBuf, len) < 0) return false;
             }
-            return true;
         } catch (RuntimeException e) {
             LimeLog.warning("UsbAudio: USB playback failed: " + e);
             return false;
+        }
+        maybeLogStats(output);
+        return true;
+    }
+
+    /** Logs the driver statistics every STATS_INTERVAL_MS while on USB. */
+    private void maybeLogStats(PlaybackOutput out) {
+        long now = clockMs.getAsLong();
+        if (now - lastStatsMs < STATS_INTERVAL_MS) return;
+        lastStatsMs = now;
+        try {
+            LimeLog.info("UsbAudio: stats " + out.stats());
+        } catch (RuntimeException e) {
+            LimeLog.warning("UsbAudio: reading USB stats failed: " + e);
         }
     }
 
@@ -241,9 +289,14 @@ public class UsbAudioRenderer implements AudioRenderer {
 
     private void maybeSwitchToUsb() {
         long now = clockMs.getAsLong();
-        if (now - lastCheckMs < RECHECK_INTERVAL_MS) return;
+        if (provider.availabilityGeneration() != generation) {
+            // Attach, detach or a readiness flip: the next attempt may succeed, stop backing off
+            generation = provider.availabilityGeneration();
+            retryDelayMs = RECHECK_INTERVAL_MS;
+        }
+        if (now - lastCheckMs < retryDelayMs) return;
         lastCheckMs = now;
-        if (tryOpenUsb()) {
+        if (openUsbWithBackoff()) {
             if (fallbackSetUp) {
                 fallbackSetUp = false;
                 try {

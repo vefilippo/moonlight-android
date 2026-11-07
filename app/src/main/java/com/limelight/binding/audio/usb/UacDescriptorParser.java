@@ -1,5 +1,7 @@
 package com.limelight.binding.audio.usb;
 
+import com.limelight.LimeLog;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -42,6 +44,7 @@ public final class UacDescriptorParser {
         try {
             return parseInternal(raw);
         } catch (RuntimeException e) {
+            LimeLog.warning("UsbAudio: descriptor parse failed: " + e);
             return null;
         }
     }

@@ -59,6 +59,8 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
     private String pendingPromptKey;
     private volatile UsbHeadset active;
     private volatile boolean ready;
+    /** Bumped on every readiness flip, attach and detach (written under lock). */
+    private volatile int generation;
 
     private final Object gainLock = new Object();
     // Guarded by gainLock (written), volatile for lock-free reads
@@ -101,7 +103,13 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
 
         if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(action)) {
             if (key != null) policy.onAttached(key);
+            synchronized (lock) {
+                generation++;
+            }
         } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(action)) {
+            synchronized (lock) {
+                generation++;
+            }
             if (device != null) {
                 synchronized (lock) {
                     UsbHeadset h = active;
@@ -136,9 +144,7 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
 
     /** First attached device that needs the Artemis driver, or null. Also refreshes isHeadsetReady. */
     public UsbDevice findCandidate() {
-        UsbDevice d = findCandidateInternal();
-        updateState(d);
-        return d;
+        return updateState(null);
     }
 
     private UsbDevice findCandidateInternal() {
@@ -155,19 +161,41 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
 
     /** @return true if the readiness flag flipped. */
     private boolean refresh() {
-        return updateState(findCandidateInternal());
+        boolean[] changed = new boolean[1];
+        updateState(changed);
+        return changed[0];
     }
 
-    private boolean updateState(UsbDevice candidate) {
-        boolean r = candidate != null && hasPermission(candidate);
+    /**
+     * Recomputes readiness. Enumeration and the permission check run under the lock, so a
+     * concurrent release()/detach cannot leave ready=true for a device that is already gone.
+     *
+     * @param changedOut nullable; element 0 is set to whether the readiness flag flipped
+     * @return the current candidate, or null
+     */
+    private UsbDevice updateState(boolean[] changedOut) {
+        UsbDevice candidate;
+        boolean changed;
+        synchronized (lock) {
+            candidate = findCandidateInternal();
+            boolean r = candidate != null && hasPermission(candidate);
+            changed = r != ready;
+            if (changed) {
+                ready = r;
+                generation++;
+                notifyListeners(r); // posted under the lock so notifications keep their order
+            }
+        }
+        if (changedOut != null) changedOut[0] = changed;
         UsbHeadset h = active;
         retargetGain(h != null ? h.deviceKey() : candidate != null ? keyOf(candidate) : null);
-        synchronized (lock) {
-            if (r == ready) return false;
-            ready = r;
-            notifyListeners(r); // posted under the lock so notifications keep their order
-            return true;
-        }
+        return candidate;
+    }
+
+    /** Changes whenever headset availability may have changed (ready flip, attach, detach). */
+    @Override
+    public int availabilityGeneration() {
+        return generation;
     }
 
     private boolean hasPermission(UsbDevice d) {
@@ -192,8 +220,7 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
      */
     public void requestAccessIfNeeded() {
         start();
-        UsbDevice d = findCandidateInternal();
-        updateState(d);
+        UsbDevice d = updateState(null);
         if (d == null || hasPermission(d)) return;
         String key = keyOf(d);
         synchronized (lock) {
@@ -318,6 +345,11 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
             @Override
             public boolean isAlive() {
                 return h.isAlive();
+            }
+
+            @Override
+            public String stats() {
+                return h.stats();
             }
 
             @Override
