@@ -46,9 +46,6 @@ final class UsbHidVolumeReader {
     private final Sink sink;
     private final Thread thread;
     private volatile boolean running = true;
-    // TEMP diagnostic: remove after G435 wheel investigation
-    private static final int RAW_LOG_LIMIT = 200;
-    private int rawLogCount;
     private boolean stopped;
 
     private UsbHidVolumeReader(UsbDeviceConnection connection, UsbInterface intf, UsbEndpoint endpoint,
@@ -293,15 +290,6 @@ final class UsbHidVolumeReader {
                 continue;
             }
             fastFailures = 0;
-            // TEMP diagnostic: remove after G435 wheel investigation
-            if (n > 0 && rawLogCount < RAW_LOG_LIMIT) {
-                rawLogCount++;
-                StringBuilder sb = new StringBuilder("UsbAudio: HID report n=").append(n).append(' ');
-                for (int i = 0; i < n && i < buf.length; i++) {
-                    sb.append(String.format("%02x ", buf[i] & 0xff));
-                }
-                LimeLog.info(sb.toString());
-            }
             int step;
             try {
                 step = tracker.onReport(buf, n);
