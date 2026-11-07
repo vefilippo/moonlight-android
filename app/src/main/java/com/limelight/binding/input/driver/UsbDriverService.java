@@ -15,6 +15,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.view.InputDevice;
+import android.view.KeyEvent;
 import android.widget.Toast;
 
 import com.limelight.LimeLog;
@@ -232,7 +233,10 @@ public class UsbDriverService extends Service implements UsbDriverListener {
             }
 
             if (inputDev.getVendorId() == device.getVendorId() &&
-                    inputDev.getProductId() == device.getProductId()) {
+                    inputDev.getProductId() == device.getProductId() &&
+                    // Keyboard/mouse-only nodes (HID interfaces) do not mean Android drives the gamepad
+                    UsbInputRecognition.isGamepad(inputDev.getSources(),
+                            inputDev.hasKeys(KeyEvent.KEYCODE_BUTTON_A)[0])) {
                 return true;
             }
         }
