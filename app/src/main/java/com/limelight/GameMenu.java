@@ -8,12 +8,18 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
 import android.view.ContextThemeWrapper;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.widget.ArrayAdapter;
+import android.widget.LinearLayout;
+import android.widget.SeekBar;
+import android.widget.TextView;
 import android.widget.Toast;
 
+import com.limelight.binding.audio.usb.UsbAudioManager;
+import com.limelight.binding.audio.usb.UsbHeadsetVolumeKeys;
 import com.limelight.binding.input.GameInputDevice;
 import com.limelight.binding.input.KeyboardTranslator;
 import com.limelight.preferences.PreferenceConfiguration;
@@ -325,12 +331,76 @@ public class GameMenu implements Game.GameMenuCallbacks {
                     game::rotateScreen));
         }
 
+        // Only while Artemis drives a USB headset: Android TV keeps its volume keys from the app
+        final UsbAudioManager usbAudio = UsbAudioManager.getInstance(game);
+        if (usbAudio.isDrivingHeadset()) {
+            options.add(new MenuOption(game.getResources().getString(R.string.usb_headset_volume,
+                    UsbHeadsetVolumeKeys.percent(usbAudio.getGainLevel())), true,
+                    () -> showHeadsetVolumeDialog(usbAudio)));
+        }
+
         options.add(new MenuOption(getString(R.string.game_menu_advanced), true,
                 () -> showAdvancedMenu(device)));
 
         options.add(new MenuOption(getString(R.string.game_menu_cancel), null));
 
         showMenuDialog(getString(R.string.quick_menu_title), options.toArray(new MenuOption[options.size()]));
+    }
+
+    /**
+     * Software gain of the Artemis-driven USB headset, the same per-headset level as its volume
+     * wheel. The SeekBar takes focus, so the D-pad's left/right keys step it one level at a time.
+     */
+    private void showHeadsetVolumeDialog(final UsbAudioManager usbAudio) {
+        int themeResId = game.getApplicationInfo().theme;
+        Context themedContext = new ContextThemeWrapper(dialogScreenContext, themeResId);
+        float density = game.getResources().getDisplayMetrics().density;
+        int pad = Math.round(24 * density);
+
+        final TextView label = new TextView(themedContext);
+        label.setGravity(Gravity.CENTER_HORIZONTAL);
+        final SeekBar seekBar = new SeekBar(themedContext);
+        seekBar.setMax(UsbAudioManager.maxGainLevel());
+        seekBar.setKeyProgressIncrement(1);
+        int level = usbAudio.getGainLevel();
+        seekBar.setProgress(level);
+        label.setText(game.getResources().getString(R.string.usb_headset_volume,
+                UsbHeadsetVolumeKeys.percent(level)));
+        seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                if (!fromUser) return;
+                usbAudio.setGainLevel(progress);
+                label.setText(game.getResources().getString(R.string.usb_headset_volume,
+                        UsbHeadsetVolumeKeys.percent(progress)));
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar bar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar bar) {
+            }
+        });
+
+        LinearLayout layout = new LinearLayout(themedContext);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(pad, pad / 2, pad, 0);
+        layout.addView(label);
+        layout.addView(seekBar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        if (currentDialog != null) {
+            currentDialog.dismiss();
+        }
+        currentDialog = new AlertDialog.Builder(themedContext)
+                .setTitle(R.string.game_menu_headset_volume)
+                .setView(layout)
+                .setPositiveButton(android.R.string.ok, null)
+                .setOnCancelListener(dialog -> hideMenu())
+                .show();
+        seekBar.requestFocus();
     }
 
     @Override

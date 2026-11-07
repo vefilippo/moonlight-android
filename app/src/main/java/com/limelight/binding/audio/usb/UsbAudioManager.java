@@ -459,6 +459,16 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
         return active;
     }
 
+    /** Artemis currently drives a USB headset (activeHeadset() != null). */
+    public boolean isDrivingHeadset() {
+        return active != null;
+    }
+
+    /** Highest gain level accepted by setGainLevel. */
+    public static int maxGainLevel() {
+        return PcmConverter.MAX_GAIN_LEVEL;
+    }
+
     public void addListener(Listener l) {
         if (l != null) listeners.addIfAbsent(l);
     }

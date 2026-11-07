@@ -28,7 +28,8 @@ public final class UsbHeadsetVolumeKeys {
         return Math.max(0, Math.min(PcmConverter.MAX_GAIN_LEVEL, next));
     }
 
-    static int percent(int level) {
+    /** Gain level (0..MAX_GAIN_LEVEL) as the percentage shown to the user. */
+    public static int percent(int level) {
         return Math.round(level * 100f / PcmConverter.MAX_GAIN_LEVEL);
     }
 
