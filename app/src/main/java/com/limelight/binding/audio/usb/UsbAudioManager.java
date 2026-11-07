@@ -92,7 +92,25 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
         filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
         filter.addAction(ACTION_USB_AUDIO_PERMISSION);
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        if (isLeanback()) {
+            // An earlier build may have enabled it here; on TV it only causes a plug-in popup.
+            setAttachActivityState(PackageManager.COMPONENT_ENABLED_STATE_DEFAULT);
+        }
         refresh();
+    }
+
+    /**
+     * Android TV. Its USB permission dialog stores no default package ("Always" has no effect),
+     * and a matching attach activity only makes SystemUI show a confirm dialog on every plug-in.
+     * So on TV the attach activity stays disabled and permission is requested when a stream
+     * starts, once per plug-in or reboot.
+     */
+    private boolean isLeanback() {
+        try {
+            return context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK);
+        } catch (RuntimeException e) {
+            return false;
+        }
     }
 
     private void handleBroadcast(Intent intent) {
@@ -227,7 +245,10 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
             if (!policy.shouldPrompt(key) || key.equals(pendingPromptKey)) return;
             pendingPromptKey = key;
         }
-        enableAttachActivity();
+        if (!isLeanback()) {
+            // Phones: makes the dialog offer "Always open Artemis", which keeps the permission
+            setAttachActivityState(PackageManager.COMPONENT_ENABLED_STATE_ENABLED);
+        }
         try {
             int flags = 0;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -249,14 +270,14 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
         }
     }
 
-    private void enableAttachActivity() {
+    private void setAttachActivityState(int state) {
         try {
-            context.getPackageManager().setComponentEnabledSetting(
-                    new ComponentName(context, UsbAudioAttachActivity.class),
-                    PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
-                    PackageManager.DONT_KILL_APP);
+            PackageManager pm = context.getPackageManager();
+            ComponentName c = new ComponentName(context, UsbAudioAttachActivity.class);
+            if (pm.getComponentEnabledSetting(c) == state) return;
+            pm.setComponentEnabledSetting(c, state, PackageManager.DONT_KILL_APP);
         } catch (RuntimeException e) {
-            LimeLog.warning("UsbAudio: cannot enable attach activity: " + e);
+            LimeLog.warning("UsbAudio: cannot change attach activity state to " + state + ": " + e);
         }
     }
 
