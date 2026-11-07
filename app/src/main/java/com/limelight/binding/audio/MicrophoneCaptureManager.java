@@ -16,6 +16,8 @@ import androidx.core.content.ContextCompat;
 
 import com.limelight.LimeLog;
 import com.limelight.R;
+import com.limelight.binding.audio.usb.UsbAudioManager;
+import com.limelight.binding.audio.usb.UsbHeadsetPcmSource;
 import com.limelight.nvstream.jni.MoonBridge;
 
 import java.util.ArrayList;
@@ -27,6 +29,25 @@ import java.util.Map;
 public class MicrophoneCaptureManager {
     public interface LevelListener {
         void onLevelUpdate(double level, boolean signalDetected, String status);
+    }
+
+    /** A 48 kHz mono 16-bit capture source. read() is called from the capture thread only. */
+    public interface PcmSource {
+        /**
+         * Fills buffer with 48 kHz mono samples, blocking at most about 100 ms.
+         * Returns the sample count; 0 means nothing yet, negative means the source ended.
+         */
+        int read(short[] buffer);
+        void close();
+        String label();
+    }
+
+    /** Picker value for the Artemis-driven USB headset. */
+    public static final int USB_HEADSET_DEVICE_ID = -2;
+
+    /** True iff the USB headset should be the capture source for this picker value. */
+    public static boolean shouldUseUsbHeadset(int preferredDeviceId, boolean headsetReady) {
+        return headsetReady && (preferredDeviceId == 0 || preferredDeviceId == USB_HEADSET_DEVICE_ID);
     }
 
     public static final class InputDeviceEntry {
@@ -51,10 +72,16 @@ public class MicrophoneCaptureManager {
     private static final double PREVIEW_PEAK_CEILING = 12000.0;
     private static final double PREVIEW_DECAY_FACTOR = 0.84;
 
+    /** Capture buffer for the USB headset source (40 ms at 48 kHz). */
+    private static final int USB_BUFFER_SAMPLES = FRAME_SIZE * 2;
+
     private final Context context;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    /** Nullable. */
+    private final UsbHeadsetPcmSource.Provider usbProvider;
 
-    private AudioRecord audioRecord;
+    /** Written by the starting thread, and by the capture thread when it falls back. */
+    private volatile PcmSource source;
     private Thread captureThread;
     private volatile boolean running;
     private boolean streamingToHost;
@@ -64,7 +91,12 @@ public class MicrophoneCaptureManager {
     private boolean signalDetected;
 
     public MicrophoneCaptureManager(Context context) {
+        this(context, UsbAudioManager.getInstance(context));
+    }
+
+    MicrophoneCaptureManager(Context context, UsbHeadsetPcmSource.Provider usbProvider) {
         this.context = context.getApplicationContext();
+        this.usbProvider = usbProvider;
         this.currentStatus = string(R.string.microphone_preview_inactive);
     }
 
@@ -104,21 +136,22 @@ public class MicrophoneCaptureManager {
     }
 
     public void stop() {
-        AudioRecord recordToRelease;
+        PcmSource sourceToClose;
         Thread threadToJoin;
         boolean wasStreaming;
 
         running = false;
-        recordToRelease = audioRecord;
+        sourceToClose = source;
         threadToJoin = captureThread;
         wasStreaming = streamingToHost;
 
-        if (recordToRelease != null) {
-            try {
-                recordToRelease.stop();
-            }
-            catch (IllegalStateException ignored) {
-            }
+        // Wake the capture thread: AudioRecord.stop() unblocks a blocking read (release must wait
+        // for the thread); closing the USB source wakes its reader natively.
+        if (sourceToClose instanceof AudioRecordPcmSource) {
+            ((AudioRecordPcmSource) sourceToClose).stopRecording();
+        }
+        else if (sourceToClose != null) {
+            sourceToClose.close();
         }
 
         if (threadToJoin != null) {
@@ -131,9 +164,14 @@ public class MicrophoneCaptureManager {
         }
 
         captureThread = null;
-        audioRecord = null;
-        if (recordToRelease != null) {
-            recordToRelease.release();
+        // The capture thread may have swapped in a fallback source after we read the field.
+        PcmSource lastSource = source;
+        source = null;
+        if (sourceToClose != null) {
+            sourceToClose.close();
+        }
+        if (lastSource != null && lastSource != sourceToClose) {
+            lastSource.close();
         }
 
         if (wasStreaming) {
@@ -148,8 +186,7 @@ public class MicrophoneCaptureManager {
     }
 
     private boolean startCapture(int preferredDeviceId, LevelListener listener, boolean streamToHost) {
-        CaptureConfig config;
-        AudioRecord newRecord;
+        final CaptureConfig config;
         final int bufferSamples;
 
         stop();
@@ -165,51 +202,55 @@ public class MicrophoneCaptureManager {
             return false;
         }
 
-        config = createCaptureConfig(preferredDeviceId);
-        if (config == null) {
-            dispatchStatus(string(R.string.microphone_preview_open_failed), 0.0, false);
-            return false;
+        PcmSource newSource = openUsbSource(preferredDeviceId);
+        final String sourceName;
+        final String deviceLabel;
+        final String statusMessage;
+        if (newSource != null) {
+            config = null;
+            bufferSamples = USB_BUFFER_SAMPLES;
+            sourceName = "USB_HEADSET";
+            deviceLabel = newSource.label();
+            statusMessage = context.getString(R.string.microphone_device_usb_headset, deviceLabel);
+        }
+        else {
+            config = createCaptureConfig(preferredDeviceId);
+            if (config == null) {
+                dispatchStatus(string(R.string.microphone_preview_open_failed), 0.0, false);
+                return false;
+            }
+            newSource = new AudioRecordPcmSource(config.record);
+            bufferSamples = config.bufferSamples;
+            sourceName = config.sourceName;
+            deviceLabel = config.deviceLabel;
+            statusMessage = config.statusMessage;
         }
 
-        newRecord = config.record;
-        bufferSamples = config.bufferSamples;
-
         if (streamToHost && MoonBridge.setupMicrophoneEncoder(SAMPLE_RATE, CHANNEL_COUNT, DEFAULT_BITRATE) != 0) {
-            newRecord.release();
+            newSource.close();
             dispatchStatus(string(R.string.microphone_encoder_setup_failed), 0.0, false);
             return false;
         }
 
-        try {
-            newRecord.startRecording();
-        }
-        catch (IllegalStateException e) {
+        // The USB source is already started by openUsbSource.
+        if (config != null && !((AudioRecordPcmSource) newSource).startRecording()) {
             if (streamToHost) {
                 MoonBridge.cleanupMicrophoneEncoder();
             }
-            newRecord.release();
-            dispatchStatus(string(R.string.microphone_capture_start_failed), 0.0, false);
-            return false;
-        }
-
-        if (newRecord.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
-            if (streamToHost) {
-                MoonBridge.cleanupMicrophoneEncoder();
-            }
-            newRecord.release();
+            newSource.close();
             dispatchStatus(string(R.string.microphone_capture_start_failed), 0.0, false);
             return false;
         }
 
         LimeLog.info(String.format((Locale) null,
                 "Microphone capture active using source %s, device %s, buffer %d samples",
-                config.sourceName,
-                config.deviceLabel,
+                sourceName,
+                deviceLabel,
                 bufferSamples));
 
-        audioRecord = newRecord;
+        source = newSource;
         streamingToHost = streamToHost;
-        currentStatus = config.statusMessage;
+        currentStatus = statusMessage;
         currentLevel = 0.0;
         signalDetected = false;
         running = true;
@@ -218,26 +259,107 @@ public class MicrophoneCaptureManager {
             MoonBridge.startMicrophoneStreaming();
         }
 
-        captureThread = new Thread(() -> runCaptureLoop(bufferSamples), streamToHost ? "MicStreamCapture" : "MicPreviewCapture");
+        captureThread = new Thread(() -> runCaptureLoop(bufferSamples, preferredDeviceId),
+                streamToHost ? "MicStreamCapture" : "MicPreviewCapture");
         captureThread.start();
-        dispatchStatus(config.statusMessage, 0.0, false);
+        dispatchStatus(statusMessage, 0.0, false);
         return true;
     }
 
-    private void runCaptureLoop(int bufferSamples) {
+    /**
+     * Opens and starts the USB headset capture source when the picker value allows it and the
+     * headset is ready (never prompts for permission). Null means use AudioRecord.
+     */
+    private PcmSource openUsbSource(int preferredDeviceId) {
+        if (usbProvider == null) {
+            return null;
+        }
+        UsbHeadsetPcmSource.CaptureInput input = null;
+        try {
+            if (!shouldUseUsbHeadset(preferredDeviceId, usbProvider.isHeadsetReady())) {
+                return null;
+            }
+            input = usbProvider.openCapture();
+            if (input == null) {
+                LimeLog.info("UsbAudio: headset has no capture stream; using the Android microphone");
+                return null;
+            }
+            if (!input.start()) {
+                LimeLog.info("UsbAudio: headset capture failed to start; using the Android microphone");
+                input.close();
+                return null;
+            }
+            return new UsbHeadsetPcmSource(input, usbProvider.headsetLabel());
+        }
+        catch (RuntimeException e) {
+            LimeLog.warning("UsbAudio: headset capture unavailable: " + e);
+            if (input != null) {
+                input.close();
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Called on the capture thread after the USB source ended: one attempt to continue on the
+     * AudioRecord path with the same picker value (minus USB). The host encoder session is kept.
+     * Returns the new source, already started and published in {@link #source}, or null.
+     */
+    private AudioRecordPcmSource fallBackToAudioRecord(int preferredDeviceId) {
+        CaptureConfig config = createCaptureConfig(preferredDeviceId);
+        if (config == null) {
+            return null;
+        }
+        AudioRecordPcmSource fallback = new AudioRecordPcmSource(config.record);
+        fallback.bufferSamples = config.bufferSamples;
+        if (!running || !fallback.startRecording()) {
+            fallback.close();
+            return null;
+        }
+        LimeLog.info(String.format((Locale) null,
+                "Microphone capture continuing using source %s, device %s, buffer %d samples",
+                config.sourceName,
+                config.deviceLabel,
+                config.bufferSamples));
+        source = fallback;
+        dispatchStatus(config.statusMessage, 0.0, false);
+        return fallback;
+    }
+
+    private void runCaptureLoop(int bufferSamples, int preferredDeviceId) {
         short[] readBuffer = new short[bufferSamples];
         int pendingPeak = 0;
         double pendingRms = 0.0;
         long lastUpdateTime = SystemClock.elapsedRealtime();
+        boolean triedFallback = false;
 
-        while (running && audioRecord != null) {
+        while (running) {
+            PcmSource current = source;
             int samplesRead;
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                samplesRead = audioRecord.read(readBuffer, 0, readBuffer.length, AudioRecord.READ_BLOCKING);
+            if (current == null) {
+                break;
             }
-            else {
-                samplesRead = audioRecord.read(readBuffer, 0, readBuffer.length);
+
+            samplesRead = current.read(readBuffer);
+
+            if (samplesRead < 0 && current instanceof UsbHeadsetPcmSource) {
+                if (!running) {
+                    break;
+                }
+                LimeLog.info("UsbAudio: headset microphone ended (" + samplesRead + ")");
+                current.close();
+                AudioRecordPcmSource fallback = triedFallback ? null : fallBackToAudioRecord(preferredDeviceId);
+                triedFallback = true;
+                if (fallback == null) {
+                    LimeLog.info("UsbAudio: no Android microphone fallback; microphone capture stopped");
+                    if (running) {
+                        dispatchStatus(string(R.string.microphone_preview_open_failed), 0.0, false);
+                    }
+                    break;
+                }
+                readBuffer = new short[fallback.bufferSamples];
+                continue;
             }
 
             if (samplesRead <= 0) {
@@ -451,6 +573,57 @@ public class MicrophoneCaptureManager {
                     return productName.toString();
                 }
                 return "Input device " + deviceInfo.getId();
+        }
+    }
+
+    /** The platform microphone path. close() releases the AudioRecord; stopRecording() wakes a blocked read. */
+    private static final class AudioRecordPcmSource implements PcmSource {
+        private final AudioRecord record;
+        private boolean released;
+        int bufferSamples;
+
+        AudioRecordPcmSource(AudioRecord record) {
+            this.record = record;
+        }
+
+        boolean startRecording() {
+            try {
+                record.startRecording();
+            }
+            catch (IllegalStateException e) {
+                return false;
+            }
+            return record.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING;
+        }
+
+        void stopRecording() {
+            try {
+                record.stop();
+            }
+            catch (IllegalStateException ignored) {
+            }
+        }
+
+        @Override
+        public int read(short[] buffer) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                return record.read(buffer, 0, buffer.length, AudioRecord.READ_BLOCKING);
+            }
+            return record.read(buffer, 0, buffer.length);
+        }
+
+        @Override
+        public synchronized void close() {
+            if (released) {
+                return;
+            }
+            released = true;
+            record.release();
+        }
+
+        @Override
+        public String label() {
+            return "AudioRecord";
         }
     }
 

@@ -25,7 +25,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Process-wide owner of the userspace USB headset: detection, the one-time permission prompt,
  * a reference-counted shared UsbHeadset, and the per-headset gain store.
  */
-public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider {
+public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
+        UsbHeadsetPcmSource.Provider {
     static final String ACTION_USB_AUDIO_PERMISSION = "com.limelight.USB_AUDIO_PERMISSION";
     private static final String GAIN_PREF_PREFIX = "usb_audio_gain_";
 
@@ -326,6 +327,57 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider 
                 release(h);
             }
         };
+    }
+
+    /**
+     * Acquires the shared headset for microphone capture. Null if there is no headset or it has
+     * no capture direction (the reference is dropped again in that case).
+     */
+    @Override
+    public UsbHeadsetPcmSource.CaptureInput openCapture() {
+        final UsbHeadset h = acquire();
+        if (h == null) return null;
+        final UacStreamConfig cfg = h.captureConfig();
+        if (cfg == null) {
+            release(h);
+            return null;
+        }
+        return new UsbHeadsetPcmSource.CaptureInput() {
+            private boolean closed;
+
+            @Override
+            public UacStreamConfig config() {
+                return cfg;
+            }
+
+            @Override
+            public boolean start() {
+                return h.startCapture();
+            }
+
+            @Override
+            public int read(byte[] buf, int max, int timeoutMs) {
+                return h.readCapture(buf, max, timeoutMs);
+            }
+
+            @Override
+            public synchronized void close() {
+                if (closed) return;
+                closed = true;
+                release(h);
+            }
+        };
+    }
+
+    /** Product name of the active headset, else of the current candidate; null if there is none. */
+    @Override
+    public String headsetLabel() {
+        UsbHeadset h = active;
+        if (h != null) return h.label();
+        UsbDevice d = findCandidateInternal();
+        if (d == null) return null;
+        String name = d.getProductName();
+        return name != null && !name.trim().isEmpty() ? name : "USB headset";
     }
 
     /** Drops a reference taken by acquire(); closes the headset when the last one goes. */

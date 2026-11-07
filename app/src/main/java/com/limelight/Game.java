@@ -237,6 +237,19 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     private MediaCodecDecoderRenderer decoderRenderer;
     private boolean reportedCrash;
     private MicrophoneCaptureManager microphoneCaptureManager;
+    /** Restarts mic capture when the Artemis-driven USB headset appears or goes (main thread). */
+    private final UsbAudioManager.Listener usbHeadsetMicListener = available -> {
+        if (!connected || prefConfig == null || !prefConfig.enableMicrophone) {
+            return;
+        }
+        int deviceId = prefConfig.microphoneDeviceId;
+        if (deviceId != 0 && deviceId != MicrophoneCaptureManager.USB_HEADSET_DEVICE_ID) {
+            return;
+        }
+        LimeLog.info("UsbAudio: headset availability changed (" + available + "); restarting microphone capture");
+        stopMicrophoneCapture();
+        startMicrophoneCapture();
+    };
 
     private WifiManager.WifiLock highPerfWifiLock;
     private WifiManager.WifiLock lowLatencyWifiLock;
@@ -358,6 +371,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // Read the stream preferences
         prefConfig = PreferenceConfiguration.readPreferences(this);
         tombstonePrefs = Game.this.getSharedPreferences("DecoderTombstone", 0);
+        UsbAudioManager.getInstance(this).addListener(usbHeadsetMicListener);
 
         if (prefConfig.fullScreen) {
             // Full-screen
@@ -1714,6 +1728,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        UsbAudioManager.getInstance(this).removeListener(usbHeadsetMicListener);
         stopMicrophoneCapture();
         super.onDestroy();
 

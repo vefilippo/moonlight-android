@@ -52,6 +52,7 @@ import com.limelight.LimeLog;
 import com.limelight.PcView;
 import com.limelight.R;
 import com.limelight.binding.audio.MicrophoneCaptureManager;
+import com.limelight.binding.audio.usb.UsbAudioManager;
 import com.limelight.binding.input.virtual_controller.keyboard.KeyBoardControllerConfigurationLoader;
 import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.utils.Dialog;
@@ -1043,21 +1044,37 @@ public class StreamSettings extends AppCompatActivity {
 
             java.util.List<MicrophoneCaptureManager.InputDeviceEntry> deviceEntries =
                     MicrophoneCaptureManager.getAvailableInputDevices(requireContext());
-            CharSequence[] labels = new CharSequence[deviceEntries.size() + 1];
-            CharSequence[] values = new CharSequence[deviceEntries.size() + 1];
+            // Artemis-driven USB headset (not visible to Android as an input device).
+            UsbAudioManager usbAudio = UsbAudioManager.getInstance(requireContext());
+            String usbHeadsetLabel = null;
+            if (usbAudio.findCandidate() != null) {
+                usbHeadsetLabel = usbAudio.headsetLabel();
+                if (usbHeadsetLabel == null) {
+                    usbHeadsetLabel = "USB headset";
+                }
+            }
+            int fixedEntries = usbHeadsetLabel != null ? 2 : 1;
+
+            CharSequence[] labels = new CharSequence[deviceEntries.size() + fixedEntries];
+            CharSequence[] values = new CharSequence[deviceEntries.size() + fixedEntries];
 
             labels[0] = getString(R.string.microphone_device_default);
             values[0] = "0";
+            if (usbHeadsetLabel != null) {
+                labels[1] = getString(R.string.microphone_device_usb_headset, usbHeadsetLabel);
+                values[1] = Integer.toString(MicrophoneCaptureManager.USB_HEADSET_DEVICE_ID);
+            }
 
             String selectedValue = getPrefs().getString(
                     PreferenceConfiguration.MICROPHONE_DEVICE_PREF_STRING, "0");
-            boolean hasSelectedDevice = "0".equals(selectedValue);
+            boolean hasSelectedDevice = "0".equals(selectedValue) ||
+                    (usbHeadsetLabel != null && values[1].equals(selectedValue));
 
             for (int i = 0; i < deviceEntries.size(); i++) {
                 MicrophoneCaptureManager.InputDeviceEntry deviceEntry = deviceEntries.get(i);
-                labels[i + 1] = deviceEntry.label;
-                values[i + 1] = Integer.toString(deviceEntry.id);
-                if (values[i + 1].equals(selectedValue)) {
+                labels[i + fixedEntries] = deviceEntry.label;
+                values[i + fixedEntries] = Integer.toString(deviceEntry.id);
+                if (values[i + fixedEntries].equals(selectedValue)) {
                     hasSelectedDevice = true;
                 }
             }
