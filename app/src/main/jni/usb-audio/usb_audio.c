@@ -514,6 +514,10 @@ static void drain_stream_locked(struct handle *h, struct stream *s)
     atomic_store(&s->dead, 1);
     discard_stream(h, s);
     h->draining = 1;
+    /* The reaper may be idle in cond_wait(ctl_cond) from before this start
+     * call submitted anything; wake it. s->inflight > 0 implies in_flight > 0,
+     * so it proceeds to REAPURB instead of sleeping again. */
+    pthread_cond_broadcast(&h->ctl_cond);
     while (atomic_load(&s->inflight) > 0 && h->thread_started && !h->reaper_done)
         pthread_cond_wait(&h->ctl_cond, &h->ctl);
     h->draining = 0;
