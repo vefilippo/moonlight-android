@@ -2085,24 +2085,6 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         return (byte) modifierFlags;
     }
 
-    /**
-     * Diagnostic only: logs whether volume keys (e.g. the USB headset wheel) reach the activity
-     * at all; Android TV may consume them before dispatch. Behaviour is unchanged.
-     */
-    @Override
-    public boolean dispatchKeyEvent(KeyEvent event) {
-        int code = event.getKeyCode();
-        if (code == KeyEvent.KEYCODE_VOLUME_UP || code == KeyEvent.KEYCODE_VOLUME_DOWN
-                || code == KeyEvent.KEYCODE_VOLUME_MUTE) {
-            InputDevice dev = event.getDevice();
-            LimeLog.info("UsbAudio: volume key action=" + event.getAction() + " keyCode=" + code
-                    + " deviceId=" + event.getDeviceId()
-                    + " device=" + (dev != null ? dev.getName() : "null")
-                    + " id=" + (dev != null ? String.format("%04x:%04x", dev.getVendorId(), dev.getProductId()) : "none"));
-        }
-        return super.dispatchKeyEvent(event);
-    }
-
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         return handleKeyDown(event) || super.onKeyDown(keyCode, event);
