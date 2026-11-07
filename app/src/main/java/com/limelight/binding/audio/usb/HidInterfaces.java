@@ -15,12 +15,22 @@ final class HidInterfaces {
         final int reportDescriptorLength;
         final int inEndpointAddress;
         final int inMaxPacketSize;
+        final int subclass;
+        final int protocol;
 
-        Info(int interfaceNumber, int reportDescriptorLength, int inEndpointAddress, int inMaxPacketSize) {
+        Info(int interfaceNumber, int reportDescriptorLength, int inEndpointAddress, int inMaxPacketSize,
+             int subclass, int protocol) {
             this.interfaceNumber = interfaceNumber;
             this.reportDescriptorLength = reportDescriptorLength;
             this.inEndpointAddress = inEndpointAddress;
             this.inMaxPacketSize = inMaxPacketSize;
+            this.subclass = subclass;
+            this.protocol = protocol;
+        }
+
+        /** Boot-protocol keyboard (subclass 1, protocol 1) or mouse (subclass 1, protocol 2). */
+        boolean isBootKeyboardOrMouse() {
+            return subclass == 1 && (protocol == 1 || protocol == 2);
         }
     }
 
@@ -36,7 +46,7 @@ final class HidInterfaces {
     static List<Info> parse(byte[] raw) {
         List<Info> out = new ArrayList<>();
         if (raw == null) return out;
-        int intf = -1, reportLen = 0, ep = 0, mps = 0;
+        int intf = -1, reportLen = 0, ep = 0, mps = 0, sub = 0, proto = 0;
         boolean inHid = false;
         int i = 0;
         while (i + 1 < raw.length) {
@@ -44,9 +54,11 @@ final class HidInterfaces {
             if (len < 2 || i + len > raw.length) break;
             int type = raw[i + 1] & 0xFF;
             if (type == DT_INTERFACE && len >= 9) {
-                if (inHid) add(out, intf, reportLen, ep, mps);
+                if (inHid) add(out, intf, reportLen, ep, mps, sub, proto);
                 inHid = (raw[i + 5] & 0xFF) == USB_CLASS_HID && (raw[i + 3] & 0xFF) == 0;
                 intf = raw[i + 2] & 0xFF;
+                sub = raw[i + 6] & 0xFF;
+                proto = raw[i + 7] & 0xFF;
                 reportLen = 0;
                 ep = 0;
                 mps = 0;
@@ -69,11 +81,11 @@ final class HidInterfaces {
             }
             i += len;
         }
-        if (inHid) add(out, intf, reportLen, ep, mps);
+        if (inHid) add(out, intf, reportLen, ep, mps, sub, proto);
         return out;
     }
 
-    private static void add(List<Info> out, int intf, int reportLen, int ep, int mps) {
-        if (reportLen > 0 && ep != 0 && mps > 0) out.add(new Info(intf, reportLen, ep, mps));
+    private static void add(List<Info> out, int intf, int reportLen, int ep, int mps, int sub, int proto) {
+        if (reportLen > 0 && ep != 0 && mps > 0) out.add(new Info(intf, reportLen, ep, mps, sub, proto));
     }
 }

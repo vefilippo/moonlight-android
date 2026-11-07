@@ -2,6 +2,7 @@ package com.limelight.binding.audio.usb;
 
 import static com.limelight.binding.audio.usb.HidVolumeReportParserTest.bytes;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -50,6 +51,34 @@ public class HidInterfacesTest {
         assertEquals(23, consumer.reportDescriptorLength);
         assertEquals(0x81, consumer.inEndpointAddress);
         assertEquals(8, consumer.inMaxPacketSize);
+    }
+
+    @Test public void g435InterfacesAreNotBootDevices() {
+        for (HidInterfaces.Info i : HidInterfaces.parse(fixture("g435_descriptors.hex"))) {
+            assertFalse(i.isBootKeyboardOrMouse());
+        }
+    }
+
+    private static HidInterfaces.Info single(int subclass, int protocol) {
+        byte[] raw = bytes(
+                0x09, 0x02, 0x22, 0x00, 0x01, 0x01, 0x00, 0x80, 0x32,
+                0x09, 0x04, 0x02, 0x00, 0x01, 0x03, subclass, protocol, 0x00,
+                0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x3F, 0x00,
+                0x07, 0x05, 0x82, 0x03, 0x08, 0x00, 0x0A);
+        List<HidInterfaces.Info> l = HidInterfaces.parse(raw);
+        assertEquals(1, l.size());
+        assertEquals(2, l.get(0).interfaceNumber);
+        assertEquals(subclass, l.get(0).subclass);
+        assertEquals(protocol, l.get(0).protocol);
+        return l.get(0);
+    }
+
+    @Test public void bootKeyboardAndMouseAreRecognised() {
+        assertTrue(single(1, 1).isBootKeyboardOrMouse());
+        assertTrue(single(1, 2).isBootKeyboardOrMouse());
+        assertFalse(single(1, 0).isBootKeyboardOrMouse());
+        assertFalse(single(0, 1).isBootKeyboardOrMouse());
+        assertFalse(single(0, 0).isBootKeyboardOrMouse());
     }
 
     @Test public void interfaceWithoutInterruptInIsSkipped() {
