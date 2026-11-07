@@ -210,7 +210,8 @@ static void reset_urb(struct usbdevfs_urb *u)
 }
 
 /* Returns 0 or -errno. in_flight is raised before the ioctl so the reaper
- * can never see a completion for a URB it has not counted. */
+ * can never see a completion for a URB it has not counted. Callers other
+ * than the reaper thread must hold h->ctl (see reaper_main). */
 static int submit(struct handle *h, struct usbdevfs_urb *u)
 {
     atomic_fetch_add(&h->in_flight, 1);
@@ -414,19 +415,22 @@ static void *reaper_main(void *arg)
     int discarded = 0;
 
     for (;;) {
-        if (!discarded && atomic_load(&h->stopping)) {
+        /* in_flight is read under ctl. Start calls do increment + SUBMITURB +
+         * (on failure) decrement entirely under ctl, and only this thread
+         * changes it outside ctl, so a count > 0 seen here means a URB really
+         * is pending in the kernel and REAPURB will return (completion,
+         * discard, or ENODEV). Never block in REAPURB on a transient count. */
+        pthread_mutex_lock(&h->ctl);
+        while (atomic_load(&h->in_flight) <= 0 && !atomic_load(&h->stopping))
+            pthread_cond_wait(&h->ctl_cond, &h->ctl);
+        int pending = atomic_load(&h->in_flight);
+        int stop = atomic_load(&h->stopping);
+        pthread_mutex_unlock(&h->ctl);
+        if (pending <= 0) break;  /* implies stopping */
+        if (stop && !discarded) {
             /* Catches URBs resubmitted after close() did its discard pass. */
             discard_all(h);
             discarded = 1;
-        }
-        if (atomic_load(&h->in_flight) <= 0) {
-            pthread_mutex_lock(&h->ctl);
-            while (atomic_load(&h->in_flight) <= 0 && !atomic_load(&h->stopping))
-                pthread_cond_wait(&h->ctl_cond, &h->ctl);
-            int done = atomic_load(&h->in_flight) <= 0;
-            pthread_mutex_unlock(&h->ctl);
-            if (done) break;
-            continue;
         }
         struct usbdevfs_urb *u = NULL;
         if (ioctl(h->fd, USBDEVFS_REAPURB, &u) != 0) {
