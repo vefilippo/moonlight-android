@@ -74,7 +74,25 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
     private volatile String gainKey;
     private volatile float gain = PcmConverter.gainForLevel(PcmConverter.DEFAULT_GAIN_LEVEL);
 
-    /** Steps the gain from the HID wheel (reader thread) and tells the volume listeners. */
+    /** Receives level changes for a headset whose feature-unit volume replaces software gain. Must not block. */
+    interface HardwareVolume {
+        void setLevel(int level);
+    }
+
+    private static final class HardwareVolumeBinding {
+        final String key;
+        final HardwareVolume target;
+
+        HardwareVolumeBinding(String key, HardwareVolume target) {
+            this.key = key;
+            this.target = target;
+        }
+    }
+
+    /** Non-null while the active headset has a hardware volume; software gain is then 1.0. */
+    private volatile HardwareVolumeBinding hardwareVolume;
+
+    /** Steps the volume level from the HID wheel (reader thread) and tells the volume listeners. */
     private final UsbHidVolumeReader.Sink hidVolumeSink = delta -> {
         int level;
         synchronized (gainLock) { // read-modify-write; setGainLevel re-enters the same monitor
@@ -347,6 +365,9 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
                 if (opened != null) {
                     active = opened;
                     refCount = 1;
+                    // Before playback can start on it, so software gain is 1.0 from the first frame.
+                    final UsbHeadset hw = opened;
+                    attachHardwareVolume(hw.hasHardwareVolume() ? hw.deviceKey() : null, hw::setVolumeLevel);
                 }
                 lock.notifyAll();
             }
@@ -378,7 +399,8 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
 
             @Override
             public boolean start() {
-                return h.startPlayback();
+                // The stored level goes to the hardware volume (if any) before the stream starts.
+                return h.startPlayback(getGainLevel(h.deviceKey()));
             }
 
             @Override
@@ -469,6 +491,7 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
                 refCount = 0;
                 active = null;
                 toClose = h;
+                attachHardwareVolume(null, null);
             }
         }
         if (toClose != null) {
@@ -525,7 +548,16 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
     /** Linear gain for the current target headset. Lock-free; read from the audio thread. */
     @Override
     public float currentGain() {
-        return gain;
+        return hardwareVolume != null ? 1.0f : gain;
+    }
+
+    /**
+     * Routes level changes for deviceKey to target (the headset's feature-unit volume) and fixes
+     * the software gain at 1.0; (null, null) goes back to software gain.
+     */
+    void attachHardwareVolume(String deviceKey, HardwareVolume target) {
+        hardwareVolume = deviceKey == null || target == null ? null
+                : new HardwareVolumeBinding(deviceKey, target);
     }
 
     int getGainLevel(String deviceKey) {
@@ -537,6 +569,9 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
         synchronized (gainLock) {
             prefs.edit().putInt(prefKey(deviceKey), l).apply();
             if (deviceKey.equals(gainKey)) gain = PcmConverter.gainForLevel(l);
+            HardwareVolumeBinding hw = hardwareVolume;
+            // Only queues the change (UsbHeadset's volume executor); safe on the main and HID threads.
+            if (hw != null && hw.key.equals(deviceKey)) hw.target.setLevel(l);
         }
     }
 

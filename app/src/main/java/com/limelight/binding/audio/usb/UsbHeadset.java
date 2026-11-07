@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -36,6 +38,11 @@ final class UsbHeadset {
     private final byte[] rawDescriptors;
     /** Null: never take over the HID volume wheel (everything but Android TV). */
     private final UsbHidVolumeReader.Sink volumeSink;
+    /** Playback feature-unit volume driven by the headset volume level; null means software gain. */
+    private final UacHardwareVolume hardwareVolume;
+    /** One "UsbAudioVolume" thread for level changes (control transfers); null without hardwareVolume. */
+    private final ExecutorService volumeExecutor;
+    private final LatestLevelExecutor volumeLevels;
 
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     /** Guarded by lock; 0 once closed. */
@@ -49,7 +56,8 @@ final class UsbHeadset {
 
     private UsbHeadset(UsbDevice device, UsbDeviceConnection connection, List<UsbInterface> claimed,
                        UacControl control, UacStreamConfig playback, UacStreamConfig capture, long handle,
-                       byte[] rawDescriptors, UsbHidVolumeReader.Sink volumeSink) {
+                       byte[] rawDescriptors, UsbHidVolumeReader.Sink volumeSink,
+                       UacHardwareVolume hardwareVolume) {
         this.device = device;
         this.connection = connection;
         this.claimed = claimed;
@@ -59,6 +67,18 @@ final class UsbHeadset {
         this.handle = handle;
         this.rawDescriptors = rawDescriptors;
         this.volumeSink = volumeSink;
+        this.hardwareVolume = hardwareVolume;
+        if (hardwareVolume != null) {
+            volumeExecutor = Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "UsbAudioVolume");
+                t.setDaemon(true);
+                return t;
+            });
+            volumeLevels = new LatestLevelExecutor(volumeExecutor, this::applyVolumeLevel);
+        } else {
+            volumeExecutor = null;
+            volumeLevels = null;
+        }
         this.key = UsbAudioPermissionPolicy.deviceKey(device.getVendorId(), device.getProductId());
     }
 
@@ -113,6 +133,13 @@ final class UsbHeadset {
                 throw new OpenFailure();
             }
 
+            // The microphone's unit is never chosen; unreadable range -> software gain.
+            UacHardwareVolume hw = null;
+            if (play != null) {
+                hw = UacHardwareVolume.create(control, desc.playbackVolumeUnit(
+                        play.alt.terminalLink, cap != null ? cap.alt.terminalLink : -1));
+            }
+
             h = UsbAudioNative.open(conn.getFileDescriptor());
             if (h == 0) {
                 LimeLog.warning("UsbAudio: native open failed");
@@ -120,8 +147,9 @@ final class UsbHeadset {
             }
 
             LimeLog.info("UsbAudio: opened " + d.getProductName() + " UAC" + desc.uacVersion
-                    + " playback=" + describe(play) + " capture=" + describe(cap));
-            return new UsbHeadset(d, conn, claimed, control, play, cap, h, raw, volumeSink);
+                    + " playback=" + describe(play) + " capture=" + describe(cap)
+                    + " volume=" + (hw != null ? "hardware unit " + hw.unitId() : "software"));
+            return new UsbHeadset(d, conn, claimed, control, play, cap, h, raw, volumeSink, hw);
         } catch (OpenFailure | RuntimeException | LinkageError e) {
             if (!(e instanceof OpenFailure)) {
                 LimeLog.warning("UsbAudio: open failed: " + e);
@@ -171,8 +199,11 @@ final class UsbHeadset {
         return capture;
     }
 
-    /** Selects the alt setting, sets the rate, unmutes and starts streaming. Idempotent once started. */
-    boolean startPlayback() {
+    /**
+     * Selects the alt setting, sets the rate, unmutes, sets the hardware volume (if any) to
+     * level and starts streaming. Idempotent once started.
+     */
+    boolean startPlayback(int level) {
         lock.readLock().lock();
         try {
             if (handle == 0 || playback == null) return false;
@@ -181,7 +212,9 @@ final class UsbHeadset {
                 UacDescriptors.AltSetting alt = playback.alt;
                 if (!selectAlt(alt.interfaceNumber, alt.alternateSetting)) return false;
                 control.setSampleRate(alt, playback.sampleRate); // logs; non-fatal (fixed-rate devices)
-                control.unmuteAndSetUnityVolume();
+                control.unmuteAndSetUnityVolume(hardwareVolumeUnit());
+                // On this (stream start) thread, before audio flows, so the first frames are at level.
+                if (hardwareVolume != null) hardwareVolume.apply(level);
                 int r = UsbAudioNative.startPlayback(handle, alt.endpointAddress, alt.maxPacketBytes,
                         alt.bInterval, playback.frameBytes(), playback.sampleRate, alt.feedbackEndpointAddress);
                 if (r != 0) {
@@ -228,7 +261,7 @@ final class UsbHeadset {
                 UacDescriptors.AltSetting alt = capture.alt;
                 if (!selectAlt(alt.interfaceNumber, alt.alternateSetting)) return false;
                 control.setSampleRate(alt, capture.sampleRate); // logs; non-fatal (fixed-rate devices)
-                control.unmuteAndSetUnityVolume();
+                control.unmuteAndSetUnityVolume(hardwareVolumeUnit());
                 int r = UsbAudioNative.startCapture(handle, alt.endpointAddress, alt.maxPacketBytes,
                         alt.bInterval, capture.frameBytes(), capture.sampleRate);
                 if (r != 0) {
@@ -259,6 +292,36 @@ final class UsbHeadset {
             hidVolume = UsbHidVolumeReader.start(device, connection, rawDescriptors, volumeSink);
         } catch (RuntimeException e) {
             LimeLog.warning("UsbAudio: HID volume takeover failed: " + e);
+        }
+    }
+
+    /** The playback feature unit drives the headset volume level (software gain stays 1.0). */
+    boolean hasHardwareVolume() {
+        return hardwareVolume != null;
+    }
+
+    private int hardwareVolumeUnit() {
+        return hardwareVolume != null ? hardwareVolume.unitId() : -1;
+    }
+
+    /**
+     * Queues the hardware volume change (no-op without one). Never blocks: the control transfers
+     * run on the UsbAudioVolume thread and rapid changes coalesce to the latest level.
+     */
+    void setVolumeLevel(int level) {
+        if (volumeLevels != null) volumeLevels.submit(level);
+    }
+
+    /** UsbAudioVolume thread. Skipped once closed; close() waits for an apply in progress. */
+    private void applyVolumeLevel(int level) {
+        lock.readLock().lock();
+        try {
+            if (handle == 0) return;
+            hardwareVolume.apply(level);
+        } catch (RuntimeException e) {
+            LimeLog.warning("UsbAudio: hardware volume change failed: " + e);
+        } finally {
+            lock.readLock().unlock();
         }
     }
 
@@ -338,6 +401,8 @@ final class UsbHeadset {
             if (handle == 0) return;
             long h = handle;
             handle = 0;
+            // Queued volume tasks now see handle == 0; none is running (it would hold the read lock).
+            if (volumeExecutor != null) volumeExecutor.shutdownNow();
             UsbHidVolumeReader hid = hidVolume;
             hidVolume = null;
             if (hid != null) {

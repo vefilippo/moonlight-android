@@ -5,8 +5,9 @@ import android.view.KeyEvent;
 
 /**
  * Routes the headset receiver's wheel (volume key events from its HID input device)
- * to Artemis's software headset gain while Artemis drives the headset. Volume keys
- * from any other device (e.g. the TV remote) are left alone.
+ * to the headset volume level (hardware feature-unit volume, else software gain) while
+ * Artemis drives the headset. Volume keys from any other device (e.g. the TV remote) are
+ * left alone.
  */
 public final class UsbHeadsetVolumeKeys {
     /** Receives the new headset volume as a percentage, 0..100. */

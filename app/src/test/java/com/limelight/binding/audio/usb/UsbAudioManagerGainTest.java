@@ -45,6 +45,26 @@ public class UsbAudioManagerGainTest {
     }
 
     @Test
+    public void hardwareVolumeMakesSoftwareGainUnityAndReceivesLevels() {
+        UsbAudioManager m = new UsbAudioManager(context);
+        m.setGainLevel("046d:0adf", 4);
+        java.util.List<Integer> levels = new java.util.ArrayList<>();
+        m.attachHardwareVolume("046d:0adf", levels::add);
+        assertEquals(1.0f, m.currentGain(), 0f);
+
+        m.setGainLevel("046d:0adf", 7);
+        m.setGainLevel("1234:5678", 2); // another headset: not forwarded
+        assertEquals(java.util.Arrays.asList(7), levels);
+        assertEquals(1.0f, m.currentGain(), 0f);
+        assertEquals(7, m.getGainLevel("046d:0adf"));
+
+        m.attachHardwareVolume(null, null);
+        m.setGainLevel("046d:0adf", 9);
+        assertEquals(java.util.Arrays.asList(7), levels);
+        assertEquals(PcmConverter.gainForLevel(PcmConverter.DEFAULT_GAIN_LEVEL), m.currentGain(), 0f);
+    }
+
+    @Test
     public void noDeviceMeansDefaultLevelAndNoOpSet() {
         UsbAudioManager m = new UsbAudioManager(context);
         assertEquals(PcmConverter.DEFAULT_GAIN_LEVEL, m.getGainLevel());
