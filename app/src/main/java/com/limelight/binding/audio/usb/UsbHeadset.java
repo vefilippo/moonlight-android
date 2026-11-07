@@ -33,16 +33,23 @@ final class UsbHeadset {
     private final UacStreamConfig playback;
     private final UacStreamConfig capture;
     private final String key;
+    private final byte[] rawDescriptors;
+    /** Null: never take over the HID volume wheel (everything but Android TV). */
+    private final UsbHidVolumeReader.Sink volumeSink;
 
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     /** Guarded by lock; 0 once closed. */
     private long handle;
     private boolean playbackStarted;
     private boolean captureStarted;
+    /** Written under the read lock + this monitor, or under the write lock. */
+    private boolean hidVolumeTried;
+    private UsbHidVolumeReader hidVolume;
     private volatile boolean gone;
 
     private UsbHeadset(UsbDevice device, UsbDeviceConnection connection, List<UsbInterface> claimed,
-                       UacControl control, UacStreamConfig playback, UacStreamConfig capture, long handle) {
+                       UacControl control, UacStreamConfig playback, UacStreamConfig capture, long handle,
+                       byte[] rawDescriptors, UsbHidVolumeReader.Sink volumeSink) {
         this.device = device;
         this.connection = connection;
         this.claimed = claimed;
@@ -50,11 +57,18 @@ final class UsbHeadset {
         this.playback = playback;
         this.capture = capture;
         this.handle = handle;
+        this.rawDescriptors = rawDescriptors;
+        this.volumeSink = volumeSink;
         this.key = UsbAudioPermissionPolicy.deviceKey(device.getVendorId(), device.getProductId());
     }
 
-    /** Opens and claims the headset. Returns null (with everything released) on any failure. */
-    static UsbHeadset open(UsbManager m, UsbDevice d) {
+    /**
+     * Opens and claims the headset. Returns null (with everything released) on any failure.
+     *
+     * @param volumeSink non-null only on Android TV: once streaming starts, the HID interface
+     *                   carrying the volume wheel is taken over and its steps go here
+     */
+    static UsbHeadset open(UsbManager m, UsbDevice d, UsbHidVolumeReader.Sink volumeSink) {
         if (m == null || d == null) return null;
         UsbDeviceConnection conn;
         try {
@@ -107,7 +121,7 @@ final class UsbHeadset {
 
             LimeLog.info("UsbAudio: opened " + d.getProductName() + " UAC" + desc.uacVersion
                     + " playback=" + describe(play) + " capture=" + describe(cap));
-            return new UsbHeadset(d, conn, claimed, control, play, cap, h);
+            return new UsbHeadset(d, conn, claimed, control, play, cap, h, raw, volumeSink);
         } catch (OpenFailure | RuntimeException | LinkageError e) {
             if (!(e instanceof OpenFailure)) {
                 LimeLog.warning("UsbAudio: open failed: " + e);
@@ -175,6 +189,7 @@ final class UsbHeadset {
                     return false;
                 }
                 playbackStarted = true;
+                startHidVolume();
                 return true;
             }
         } catch (RuntimeException e) {
@@ -221,6 +236,7 @@ final class UsbHeadset {
                     return false;
                 }
                 captureStarted = true;
+                startHidVolume();
                 return true;
             }
         } catch (RuntimeException e) {
@@ -228,6 +244,21 @@ final class UsbHeadset {
             return false;
         } finally {
             lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Android TV only (volumeSink != null): takes over the HID volume wheel once, after the first
+     * stream starts. Caller holds the read lock with handle != 0 and this monitor, so close()
+     * (write lock) cannot run concurrently and always sees the reader it has to stop.
+     */
+    private void startHidVolume() {
+        if (volumeSink == null || hidVolumeTried) return;
+        hidVolumeTried = true;
+        try {
+            hidVolume = UsbHidVolumeReader.start(device, connection, rawDescriptors, volumeSink);
+        } catch (RuntimeException e) {
+            LimeLog.warning("UsbAudio: HID volume takeover failed: " + e);
         }
     }
 
@@ -297,13 +328,26 @@ final class UsbHeadset {
         }
     }
 
-    /** Stops streaming, resets alt settings, releases interfaces and closes the connection. Idempotent. */
+    /**
+     * Hands the HID wheel back, stops streaming, resets alt settings, releases interfaces and
+     * closes the connection. Idempotent; bounded (the HID reader is joined with a timeout).
+     */
     void close() {
         lock.writeLock().lock();
         try {
             if (handle == 0) return;
             long h = handle;
             handle = 0;
+            UsbHidVolumeReader hid = hidVolume;
+            hidVolume = null;
+            if (hid != null) {
+                // The reader takes no lock of ours, so joining it under the write lock cannot deadlock.
+                try {
+                    hid.stop();
+                } catch (RuntimeException e) {
+                    LimeLog.warning("UsbAudio: HID volume stop failed: " + e);
+                }
+            }
             UsbAudioNative.close(h);
             try {
                 if (playback != null) selectAlt(playback.alt.interfaceNumber, 0);

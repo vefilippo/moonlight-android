@@ -34,6 +34,12 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
         void onHeadsetAvailabilityChanged(boolean available);
     }
 
+    /** Android TV: the headset's own volume wheel (read over HID) changed the gain. Main thread. */
+    public interface VolumeListener {
+        /** @param percent new headset volume, 0..100 */
+        void onHeadsetVolumeChanged(int percent);
+    }
+
     private static UsbAudioManager instance;
 
     public static synchronized UsbAudioManager getInstance(Context c) {
@@ -49,6 +55,7 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
     private final UsbAudioPermissionPolicy policy = new UsbAudioPermissionPolicy();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<VolumeListener> volumeListeners = new CopyOnWriteArrayList<>();
 
     private final Object lock = new Object();
     // Guarded by lock
@@ -66,6 +73,21 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
     // Guarded by gainLock (written), volatile for lock-free reads
     private volatile String gainKey;
     private volatile float gain = PcmConverter.gainForLevel(PcmConverter.DEFAULT_GAIN_LEVEL);
+
+    /** Steps the gain from the HID wheel (reader thread) and tells the volume listeners. */
+    private final UsbHidVolumeReader.Sink hidVolumeSink = delta -> {
+        int level;
+        synchronized (gainLock) { // read-modify-write; setGainLevel re-enters the same monitor
+            level = UsbHeadsetVolumeKeys.stepLevel(getGainLevel(), delta);
+            setGainLevel(level);
+        }
+        final int percent = UsbHeadsetVolumeKeys.percent(level);
+        mainHandler.post(() -> {
+            for (VolumeListener l : volumeListeners) {
+                l.onHeadsetVolumeChanged(percent);
+            }
+        });
+    };
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
@@ -316,7 +338,8 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
         try {
             UsbDevice d = findCandidateInternal();
             if (d != null && hasPermission(d)) {
-                opened = UsbHeadset.open(usbManager, d);
+                // Android TV swallows the wheel's volume keys, so only there the HID interface is taken.
+                opened = UsbHeadset.open(usbManager, d, isLeanback() ? hidVolumeSink : null);
             }
         } finally {
             synchronized (lock) {
@@ -475,6 +498,14 @@ public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider,
 
     public void removeListener(Listener l) {
         listeners.remove(l);
+    }
+
+    public void addVolumeListener(VolumeListener l) {
+        if (l != null) volumeListeners.addIfAbsent(l);
+    }
+
+    public void removeVolumeListener(VolumeListener l) {
+        volumeListeners.remove(l);
     }
 
     // ---- Gain store ----

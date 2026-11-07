@@ -280,6 +280,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
     };
 
+    /** Android TV: the headset wheel, read over HID by the USB driver, changed the volume (main thread). */
+    private final UsbAudioManager.VolumeListener usbHeadsetVolumeListener = this::showHeadsetVolume;
+
     private WifiManager.WifiLock highPerfWifiLock;
     private WifiManager.WifiLock lowLatencyWifiLock;
 
@@ -402,6 +405,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         tombstonePrefs = Game.this.getSharedPreferences("DecoderTombstone", 0);
         UsbAudioManager.getInstance(this).addListener(usbHeadsetMicListener);
         UsbAudioManager.getInstance(this).addListener(usbAudioRendererListener);
+        UsbAudioManager.getInstance(this).addVolumeListener(usbHeadsetVolumeListener);
 
         if (prefConfig.fullScreen) {
             // Full-screen
@@ -1760,6 +1764,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     protected void onDestroy() {
         UsbAudioManager.getInstance(this).removeListener(usbHeadsetMicListener);
         UsbAudioManager.getInstance(this).removeListener(usbAudioRendererListener);
+        UsbAudioManager.getInstance(this).removeVolumeListener(usbHeadsetVolumeListener);
         usbAudioPollExecutor.shutdown();
         stopMicrophoneCapture();
         // Queued tasks (ending with the stop above) still run; later submissions are rejected.
