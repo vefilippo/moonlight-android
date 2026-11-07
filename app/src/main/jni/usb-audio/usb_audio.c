@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
 #include <linux/usbdevice_fs.h>
@@ -63,7 +64,8 @@ struct stream {
     int npk;        /* packets per URB */
     int pkt_bytes;  /* max bytes per packet */
     struct usbdevfs_urb *urbs[MAX_URBS];
-    atomic_int dead;  /* stop resubmitting this stream */
+    atomic_int dead;      /* stop resubmitting this stream */
+    atomic_int inflight;  /* this stream's URBs pending in the kernel */
 };
 
 struct handle {
@@ -81,8 +83,12 @@ struct handle {
     pthread_cond_t ctl_cond;
     pthread_t thread;
     int thread_started;       /* under ctl */
+    int reaper_done;          /* under ctl: the reaper thread has left its loop */
+    int draining;             /* under ctl: a start call waits for a stream to drain */
     int play_started;         /* under ctl */
     int cap_started;          /* under ctl */
+    atomic_int play_failed;   /* every playback URB fell out of rotation */
+    atomic_int cap_failed;    /* every capture URB fell out of rotation */
 
     /* Playback (consumer state touched only by the URB-filling thread) */
     struct stream play, fb;
@@ -94,6 +100,7 @@ struct handle {
     uint32_t nominal, acc;
     uint32_t prefill_b, high_b, target_b;
     int primed, dropping;
+    uint32_t since_drop;      /* packets since the last drift drop, capped at pppm */
     atomic_uint fb_rate;      /* 16.16 frames per packet, 0 = none yet */
     int fb_shift, fb_shift_known;
 
@@ -105,7 +112,9 @@ struct handle {
     uint8_t *cring;
     uint32_t ccap, cr, cfill, cframe;
 
-    atomic_int underruns, overruns, dropped, errors;
+    /* drift_dropped: frames skipped by drift control; rejected: frames
+     * writePlayback refused for lack of ring space. */
+    atomic_int underruns, overruns, drift_dropped, rejected, errors;
 };
 
 /* ---- Handle lifetime ---- */
@@ -177,6 +186,7 @@ static int alloc_stream(struct stream *s, int kind, int ep, int nurbs, int npk, 
     s->pkt_bytes = pkt_bytes;
     s->nurbs = 0;
     atomic_store(&s->dead, 0);
+    atomic_store(&s->inflight, 0);
     for (int i = 0; i < nurbs; i++) {
         struct usbdevfs_urb *u = calloc(1, hdr + data);
         if (!u) {
@@ -211,13 +221,17 @@ static void reset_urb(struct usbdevfs_urb *u)
 
 /* Returns 0 or -errno. in_flight is raised before the ioctl so the reaper
  * can never see a completion for a URB it has not counted. Callers other
- * than the reaper thread must hold h->ctl (see reaper_main). */
+ * than the reaper thread must hold h->ctl (see reaper_main). The stream's
+ * own count is kept the same way; the reaper lowers it after complete_urb. */
 static int submit(struct handle *h, struct usbdevfs_urb *u)
 {
+    struct stream *s = u->usercontext;
     atomic_fetch_add(&h->in_flight, 1);
+    atomic_fetch_add(&s->inflight, 1);
     if (ioctl(h->fd, USBDEVFS_SUBMITURB, u) == 0)
         return 0;
     int e = errno;
+    atomic_fetch_sub(&s->inflight, 1);
     atomic_fetch_sub(&h->in_flight, 1);
     return -e;
 }
@@ -269,6 +283,7 @@ static void fill_packet(struct handle *h, uint8_t *dst, uint32_t bytes)
 {
     uint32_t fill = atomic_load_explicit(&h->pfill, memory_order_acquire);
 
+    if (h->since_drop < h->pppm) h->since_drop++;
     if (!h->primed) {
         if (fill < h->prefill_b) {
             memset(dst, 0, bytes);
@@ -290,9 +305,12 @@ static void fill_packet(struct handle *h, uint8_t *dst, uint32_t bytes)
         return;
     }
     uint32_t consume = bytes;
-    if (h->dropping && fill >= bytes + h->pframe) {
+    /* At most one frame per millisecond: at high speed there are up to 8
+     * packets per ms, and one drop per packet would be audible. */
+    if (h->dropping && h->since_drop >= h->pppm && fill >= bytes + h->pframe) {
         consume += h->pframe;
-        atomic_fetch_add(&h->dropped, 1);
+        h->since_drop = 0;
+        atomic_fetch_add(&h->drift_dropped, 1);
     }
     play_consume(h, dst, bytes, consume);
 }
@@ -376,13 +394,29 @@ static void cap_push(struct handle *h, const uint8_t *src, uint32_t n)
 
 /* ---- Reaper ---- */
 
-static void complete_urb(struct handle *h, struct usbdevfs_urb *u)
+/* Every URB of a playback or capture stream fell out of rotation while the
+ * stream should be running: report the direction as failed (getState -EIO)
+ * so Java falls back. Feedback is optional and never fails playback. */
+static void mark_failed(struct handle *h, struct stream *s)
+{
+    if (s->kind == K_FB || atomic_load(&h->stopping) || atomic_load(&h->gone) ||
+        atomic_load(&s->dead))
+        return;
+    atomic_int *f = s->kind == K_PLAY ? &h->play_failed : &h->cap_failed;
+    if (atomic_exchange(f, 1) == 0)
+        LOGE("%s stream failed: no URBs left in flight",
+             s->kind == K_PLAY ? "playback" : "capture");
+    if (s->kind == K_CAP) wake_readers(h);
+}
+
+/* Returns 1 if the URB was dropped from rotation by a resubmit error. */
+static int complete_urb(struct handle *h, struct usbdevfs_urb *u)
 {
     struct stream *s = u->usercontext;
 
     if (u->status == -ENODEV || u->status == -ESHUTDOWN) {
         set_gone(h, "urb status", -u->status);
-        return;
+        return 0;
     }
     if (s->kind == K_CAP && u->status == 0) {
         const uint8_t *buf = u->buffer;
@@ -397,22 +431,31 @@ static void complete_urb(struct handle *h, struct usbdevfs_urb *u)
     }
 
     if (atomic_load(&h->stopping) || atomic_load(&h->gone) || atomic_load(&s->dead))
-        return;
+        return 0;
 
     reset_urb(u);
     if (s->kind == K_PLAY)
         fill_play_urb(h, u);
     int r = submit(h, u);
     if (r) {
-        if (is_gone_errno(-r)) set_gone(h, "resubmit", -r);
-        else note_error(h, "resubmit", -r);
+        if (is_gone_errno(-r)) {
+            set_gone(h, "resubmit", -r);
+        } else {
+            note_error(h, "resubmit", -r);
+            return 1;
+        }
     }
+    return 0;
 }
 
 static void *reaper_main(void *arg)
 {
     struct handle *h = arg;
     int discarded = 0;
+
+    /* ANDROID_PRIORITY_URGENT_AUDIO; on Linux this applies to this thread. */
+    if (setpriority(PRIO_PROCESS, 0, -19) != 0)
+        LOGW("reaper: setpriority(-19) failed: %s", strerror(errno));
 
     for (;;) {
         /* in_flight is read under ctl. Start calls do increment + SUBMITURB +
@@ -421,6 +464,9 @@ static void *reaper_main(void *arg)
          * is pending in the kernel and REAPURB will return (completion,
          * discard, or ENODEV). Never block in REAPURB on a transient count. */
         pthread_mutex_lock(&h->ctl);
+        /* A failed start call may be waiting for its URBs to come back
+         * (drain_stream_locked); stream counts were lowered before this lock. */
+        if (h->draining) pthread_cond_broadcast(&h->ctl_cond);
         while (atomic_load(&h->in_flight) <= 0 && !atomic_load(&h->stopping))
             pthread_cond_wait(&h->ctl_cond, &h->ctl);
         int pending = atomic_load(&h->in_flight);
@@ -442,9 +488,36 @@ static void *reaper_main(void *arg)
             break;
         }
         atomic_fetch_sub(&h->in_flight, 1);
-        complete_urb(h, u);
+        struct stream *s = u->usercontext;
+        int lost = complete_urb(h, u);
+        /* Lowered only after complete_urb is done with u: a draining start
+         * call frees the URB memory once this count reaches 0. */
+        int left = atomic_fetch_sub(&s->inflight, 1) - 1;
+        if (lost && left <= 0) mark_failed(h, s);
     }
+    pthread_mutex_lock(&h->ctl);
+    h->reaper_done = 1;
+    pthread_cond_broadcast(&h->ctl_cond);
+    pthread_mutex_unlock(&h->ctl);
     return NULL;
+}
+
+/* Called with h->ctl held, from a start call that failed after allocating
+ * (and possibly submitting) this stream's URBs. Stops resubmission, discards,
+ * waits until the reaper has handed back every URB, then frees them so a
+ * later start can allocate afresh. Iso URBs always complete or are
+ * discarded, so the wait is short; if the reaper exits (device gone) the
+ * kernel has already destroyed the pending URBs. close() cannot run
+ * meanwhile: the caller holds a user reference. */
+static void drain_stream_locked(struct handle *h, struct stream *s)
+{
+    atomic_store(&s->dead, 1);
+    discard_stream(h, s);
+    h->draining = 1;
+    while (atomic_load(&s->inflight) > 0 && h->thread_started && !h->reaper_done)
+        pthread_cond_wait(&h->ctl_cond, &h->ctl);
+    h->draining = 0;
+    free_stream(s);
 }
 
 /* Called with h->ctl held. */
@@ -520,6 +593,9 @@ JNIEXPORT jint JNICALL JNIFN(startPlayback)(JNIEnv *env, jclass cls, jlong hh, j
     h->acc = 0;
     h->primed = 0;
     h->dropping = 0;
+    h->since_drop = 0;
+    atomic_store(&h->fb_rate, 0);  /* may be left over from a failed start */
+    h->fb_shift_known = 0;
     h->prefill_b = ms_to_bytes(PREFILL_MS, h->prate, h->pframe);
     h->high_b = ms_to_bytes(DRIFT_HIGH_MS, h->prate, h->pframe);
     h->target_b = ms_to_bytes(DRIFT_TARGET_MS, h->prate, h->pframe);
@@ -527,17 +603,17 @@ JNIEXPORT jint JNICALL JNIFN(startPlayback)(JNIEnv *env, jclass cls, jlong hh, j
     h->pw = h->pr = 0;
     atomic_store(&h->pfill, 0);
     h->pring = calloc(1, h->pcap);
-    if (!h->pring) { r = -ENOMEM; goto out; }
+    if (!h->pring) { r = -ENOMEM; goto fail; }
 
     r = alloc_stream(&h->play, K_PLAY, endpoint, PLAY_URBS,
                      PLAY_MS_PER_URB * (int)h->pppm, maxPacketBytes);
-    if (r) goto out;
+    if (r) goto fail;
     int fb_len = 4;
     if (feedbackEndpoint > 0) {
         r = alloc_stream(&h->fb, K_FB, feedbackEndpoint, FB_URBS, 1, fb_len);
-        if (r) goto out;
+        if (r) goto fail;
     }
-    if ((r = ensure_thread(h))) goto out;
+    if ((r = ensure_thread(h))) goto fail;
 
     LOGI("startPlayback ep=0x%02x maxPacket=%d bInterval=%d frameBytes=%d rate=%d fb=0x%02x "
          "pktPerMs=%u nominal=0x%08x",
@@ -557,7 +633,7 @@ JNIEXPORT jint JNICALL JNIFN(startPlayback)(JNIEnv *env, jclass cls, jlong hh, j
             fr = submit(h, h->fb.urbs[i]);
         }
         if (fr) {
-            if (is_gone_errno(-fr)) { set_gone(h, "fb submit", -fr); r = fr; goto out; }
+            if (is_gone_errno(-fr)) { set_gone(h, "fb submit", -fr); r = fr; goto fail; }
             LOGW("feedback submit failed: %s; using nominal rate", strerror(-fr));
             atomic_store(&h->fb.dead, 1);
             break;
@@ -573,13 +649,21 @@ JNIEXPORT jint JNICALL JNIFN(startPlayback)(JNIEnv *env, jclass cls, jlong hh, j
         if (r) {
             LOGE("playback submit failed: %s", strerror(-r));
             if (is_gone_errno(-r)) set_gone(h, "play submit", -r);
-            atomic_store(&h->play.dead, 1);
-            atomic_store(&h->fb.dead, 1);
-            goto out;
+            goto fail;
         }
     }
     atomic_store_explicit(&h->play_active, 1, memory_order_release);
     r = 0;
+    goto out;
+fail:
+    /* Undo everything so a later startPlayback can succeed. */
+    atomic_store(&h->play.dead, 1);
+    atomic_store(&h->fb.dead, 1);
+    drain_stream_locked(h, &h->play);
+    drain_stream_locked(h, &h->fb);
+    free(h->pring);
+    h->pring = NULL;
+    h->play_started = 0;
 out:
     pthread_cond_broadcast(&h->ctl_cond);
     pthread_mutex_unlock(&h->ctl);
@@ -596,6 +680,8 @@ JNIEXPORT jint JNICALL JNIFN(writePlayback)(JNIEnv *env, jclass cls, jlong hh,
     int r;
     if (atomic_load(&h->gone)) {
         r = -ENODEV;
+    } else if (atomic_load(&h->play_failed)) {
+        r = -EIO;
     } else if (!atomic_load_explicit(&h->play_active, memory_order_acquire) || !data) {
         r = -EINVAL;
     } else {
@@ -617,7 +703,7 @@ JNIEXPORT jint JNICALL JNIFN(writePlayback)(JNIEnv *env, jclass cls, jlong hh,
             atomic_fetch_add_explicit(&h->pfill, n, memory_order_release);
         }
         if (want > n)
-            atomic_fetch_add(&h->dropped, (int)((want - n) / h->pframe));
+            atomic_fetch_add(&h->rejected, (int)((want - n) / h->pframe));
         r = (int)n;
     }
     leave(h);
@@ -650,11 +736,11 @@ JNIEXPORT jint JNICALL JNIFN(startCapture)(JNIEnv *env, jclass cls, jlong hh, ji
     h->cr = h->cfill = 0;
     h->cring = calloc(1, h->ccap);
     pthread_mutex_unlock(&h->cm);
-    if (!h->cring) { r = -ENOMEM; goto out; }
+    if (!h->cring) { r = -ENOMEM; goto fail; }
 
     r = alloc_stream(&h->cap, K_CAP, endpoint, CAP_URBS, CAP_MS_PER_URB * ppm, maxPacketBytes);
-    if (r) goto out;
-    if ((r = ensure_thread(h))) goto out;
+    if (r) goto fail;
+    if ((r = ensure_thread(h))) goto fail;
 
     LOGI("startCapture ep=0x%02x maxPacket=%d bInterval=%d frameBytes=%d rate=%d pktPerMs=%d",
          endpoint, maxPacketBytes, bInterval, frameBytes, sampleRate, ppm);
@@ -664,12 +750,22 @@ JNIEXPORT jint JNICALL JNIFN(startCapture)(JNIEnv *env, jclass cls, jlong hh, ji
         if (r) {
             LOGE("capture submit failed: %s", strerror(-r));
             if (is_gone_errno(-r)) set_gone(h, "cap submit", -r);
-            atomic_store(&h->cap.dead, 1);
-            goto out;
+            goto fail;
         }
     }
     atomic_store_explicit(&h->cap_active, 1, memory_order_release);
     r = 0;
+    goto out;
+fail:
+    /* Undo everything so a later startCapture can succeed. The ring is freed
+     * only after the drain: completing capture URBs push into it. */
+    drain_stream_locked(h, &h->cap);
+    pthread_mutex_lock(&h->cm);
+    free(h->cring);
+    h->cring = NULL;
+    h->cr = h->cfill = 0;
+    pthread_mutex_unlock(&h->cm);
+    h->cap_started = 0;
 out:
     pthread_cond_broadcast(&h->ctl_cond);
     pthread_mutex_unlock(&h->ctl);
@@ -703,13 +799,13 @@ JNIEXPORT jint JNICALL JNIFN(readCapture)(JNIEnv *env, jclass cls, jlong hh,
     int r;
     pthread_mutex_lock(&h->cm);
     while (h->cfill == 0 && !atomic_load(&h->closing) && !atomic_load(&h->gone) &&
-           timeoutMs > 0) {
+           !atomic_load(&h->cap_failed) && timeoutMs > 0) {
         if (pthread_cond_timedwait(&h->cc, &h->cm, &dl) == ETIMEDOUT) break;
     }
     if (atomic_load(&h->closing)) {
         r = -EBADF;
     } else if (h->cfill == 0) {
-        r = atomic_load(&h->gone) ? -ENODEV : 0;
+        r = atomic_load(&h->gone) ? -ENODEV : atomic_load(&h->cap_failed) ? -EIO : 0;
     } else {
         uint32_t n = h->cfill < want ? h->cfill : want;
         uint32_t first = h->ccap - h->cr < n ? h->ccap - h->cr : n;
@@ -731,7 +827,9 @@ JNIEXPORT jint JNICALL JNIFN(getState)(JNIEnv *env, jclass cls, jlong hh)
     (void)env; (void)cls;
     struct handle *h = enter(hh);
     if (!h) return -EBADF;
-    int r = atomic_load(&h->gone) ? -ENODEV : 0;
+    /* -EIO: a started direction lost all its URBs (see mark_failed). */
+    int r = atomic_load(&h->gone) ? -ENODEV
+          : (atomic_load(&h->play_failed) || atomic_load(&h->cap_failed)) ? -EIO : 0;
     leave(h);
     return r;
 }
@@ -745,15 +843,17 @@ static void format_stats(struct handle *h, char *buf, size_t len)
         fbr = (double)fb / 65536.0 * h->pppm;
         queued = (int)((uint64_t)atomic_load(&h->pfill) * 1000 / ((uint64_t)h->prate * h->pframe));
     }
-    snprintf(buf, len, "underruns=%d overruns=%d dropped=%d fbRate=%.2f queuedMs=%d",
+    snprintf(buf, len, "underruns=%d overruns=%d driftDropped=%d rejected=%d errors=%d "
+             "fbRate=%.2f queuedMs=%d",
              atomic_load(&h->underruns), atomic_load(&h->overruns),
-             atomic_load(&h->dropped), fbr, queued);
+             atomic_load(&h->drift_dropped), atomic_load(&h->rejected),
+             atomic_load(&h->errors), fbr, queued);
 }
 
 JNIEXPORT jstring JNICALL JNIFN(getStats)(JNIEnv *env, jclass cls, jlong hh)
 {
     (void)cls;
-    char buf[160];
+    char buf[256];
     struct handle *h = enter(hh);
     if (!h) return (*env)->NewStringUTF(env, "closed");
     format_stats(h, buf, sizeof(buf));
@@ -785,9 +885,10 @@ JNIEXPORT void JNICALL JNIFN(close)(JNIEnv *env, jclass cls, jlong hh)
     discard_all(h);
     if (started) pthread_join(h->thread, NULL);
 
-    char buf[160];
+    char buf[256];
     format_stats(h, buf, sizeof(buf));
-    LOGI("close: %s errors=%d gone=%d", buf, atomic_load(&h->errors), atomic_load(&h->gone));
+    LOGI("close: %s gone=%d playFailed=%d capFailed=%d", buf, atomic_load(&h->gone),
+         atomic_load(&h->play_failed), atomic_load(&h->cap_failed));
 
     free_stream(&h->play);
     free_stream(&h->fb);

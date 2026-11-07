@@ -26,17 +26,17 @@ final class UsbAudioNative {
     static native int startPlayback(long h, int endpoint, int maxPacketBytes, int bInterval,
                                     int frameBytes, int sampleRate, int feedbackEndpoint);
 
-    /** Non-blocking. Returns bytes accepted (whole frames), -19 if the device is gone. */
+    /** Non-blocking. Returns bytes accepted (whole frames), -19 if the device is gone, -5 if playback failed. */
     static native int writePlayback(long h, byte[] data, int length);
 
     /** Returns 0 or -errno. */
     static native int startCapture(long h, int endpoint, int maxPacketBytes, int bInterval,
                                    int frameBytes, int sampleRate);
 
-    /** Blocks up to timeoutMs. Returns bytes, 0 on timeout, negative if gone or closed. */
+    /** Blocks up to timeoutMs. Returns bytes, 0 on timeout, negative if gone, failed (-5) or closed. */
     static native int readCapture(long h, byte[] buffer, int maxLength, int timeoutMs);
 
-    /** 0 OK, -19 device gone. */
+    /** 0 OK, -19 device gone, -5 a started direction lost all its URBs. */
     static native int getState(long h);
 
     static native String getStats(long h);
