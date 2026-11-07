@@ -1,0 +1,348 @@
+package com.limelight.binding.audio.usb;
+
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbManager;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+
+import androidx.core.content.ContextCompat;
+import androidx.preference.PreferenceManager;
+
+import com.limelight.LimeLog;
+
+import java.util.concurrent.CopyOnWriteArrayList;
+
+/**
+ * Process-wide owner of the userspace USB headset: detection, the one-time permission prompt,
+ * a reference-counted shared UsbHeadset, and the per-headset gain store.
+ */
+public final class UsbAudioManager {
+    static final String ACTION_USB_AUDIO_PERMISSION = "com.limelight.USB_AUDIO_PERMISSION";
+    private static final String GAIN_PREF_PREFIX = "usb_audio_gain_";
+
+    public interface Listener {
+        void onHeadsetAvailabilityChanged(boolean available);
+    }
+
+    private static UsbAudioManager instance;
+
+    public static synchronized UsbAudioManager getInstance(Context c) {
+        if (instance == null) {
+            instance = new UsbAudioManager(c);
+        }
+        return instance;
+    }
+
+    private final Context context;
+    private final UsbManager usbManager;
+    private final SharedPreferences prefs;
+    private final UsbAudioPermissionPolicy policy = new UsbAudioPermissionPolicy();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
+
+    private final Object lock = new Object();
+    // Guarded by lock
+    private boolean started;
+    private int refCount;
+    private String pendingPromptKey;
+    private volatile UsbHeadset active;
+    private volatile boolean ready;
+
+    private final Object gainLock = new Object();
+    // Guarded by gainLock (written), volatile for lock-free reads
+    private volatile String gainKey;
+    private volatile float gain = PcmConverter.gainForLevel(PcmConverter.DEFAULT_GAIN_LEVEL);
+
+    private final BroadcastReceiver receiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context c, Intent intent) {
+            handleBroadcast(intent);
+        }
+    };
+
+    UsbAudioManager(Context c) {
+        Context app = c.getApplicationContext();
+        context = app != null ? app : c;
+        usbManager = (UsbManager) context.getSystemService(Context.USB_SERVICE);
+        prefs = PreferenceManager.getDefaultSharedPreferences(context);
+    }
+
+    /** Registers the USB broadcast receiver. Idempotent. */
+    public void start() {
+        synchronized (lock) {
+            if (started) return;
+            started = true;
+        }
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
+        filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
+        filter.addAction(ACTION_USB_AUDIO_PERMISSION);
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        refresh();
+    }
+
+    private void handleBroadcast(Intent intent) {
+        String action = intent.getAction();
+        UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+        String key = device != null ? keyOf(device) : null;
+        boolean forceNotify = false;
+
+        if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(action)) {
+            if (key != null) policy.onAttached(key);
+        } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(action)) {
+            if (device != null) {
+                synchronized (lock) {
+                    UsbHeadset h = active;
+                    if (h != null && device.getDeviceName().equals(h.deviceName())) {
+                        LimeLog.info("UsbAudio: active headset detached");
+                        h.markGone();
+                        forceNotify = true;
+                    }
+                    if (key != null && key.equals(pendingPromptKey)) pendingPromptKey = null;
+                }
+            }
+        } else if (ACTION_USB_AUDIO_PERMISSION.equals(action)) {
+            boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
+            synchronized (lock) {
+                pendingPromptKey = null;
+            }
+            if (key != null && !granted) {
+                LimeLog.info("UsbAudio: permission denied for " + key);
+                policy.onDenied(key);
+            } else if (granted) {
+                LimeLog.info("UsbAudio: permission granted for " + key);
+            }
+        }
+
+        boolean changed = refresh();
+        if (forceNotify && !changed) {
+            synchronized (lock) {
+                notifyListeners(ready);
+            }
+        }
+    }
+
+    /** First attached device that needs the Artemis driver, or null. Also refreshes isHeadsetReady. */
+    public UsbDevice findCandidate() {
+        UsbDevice d = findCandidateInternal();
+        updateState(d);
+        return d;
+    }
+
+    private UsbDevice findCandidateInternal() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || usbManager == null) return null;
+        try {
+            for (UsbDevice d : usbManager.getDeviceList().values()) {
+                if (UsbAudioDetector.needsArtemisDriver(context, d)) return d;
+            }
+        } catch (RuntimeException e) {
+            LimeLog.warning("UsbAudio: device enumeration failed: " + e);
+        }
+        return null;
+    }
+
+    /** @return true if the readiness flag flipped. */
+    private boolean refresh() {
+        return updateState(findCandidateInternal());
+    }
+
+    private boolean updateState(UsbDevice candidate) {
+        boolean r = candidate != null && hasPermission(candidate);
+        UsbHeadset h = active;
+        retargetGain(h != null ? h.deviceKey() : candidate != null ? keyOf(candidate) : null);
+        synchronized (lock) {
+            if (r == ready) return false;
+            ready = r;
+            notifyListeners(r); // posted under the lock so notifications keep their order
+            return true;
+        }
+    }
+
+    private boolean hasPermission(UsbDevice d) {
+        try {
+            return usbManager.hasPermission(d);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    private void notifyListeners(final boolean available) {
+        mainHandler.post(() -> {
+            for (Listener l : listeners) {
+                l.onHeadsetAvailabilityChanged(available);
+            }
+        });
+    }
+
+    /**
+     * Prompts once for USB permission if a candidate exists, has no permission, has not been
+     * denied since it was attached, and no prompt is already pending for it.
+     */
+    public void requestAccessIfNeeded() {
+        start();
+        UsbDevice d = findCandidateInternal();
+        updateState(d);
+        if (d == null || hasPermission(d)) return;
+        String key = keyOf(d);
+        synchronized (lock) {
+            if (!policy.shouldPrompt(key) || key.equals(pendingPromptKey)) return;
+            pendingPromptKey = key;
+        }
+        enableAttachActivity();
+        try {
+            int flags = 0;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Mutable so the framework can fill in EXTRA_DEVICE and EXTRA_PERMISSION_GRANTED.
+                flags |= PendingIntent.FLAG_MUTABLE;
+            }
+            // Explicit package: our receiver is not exported (required on Android 14+).
+            Intent i = new Intent(ACTION_USB_AUDIO_PERMISSION);
+            i.setPackage(context.getPackageName());
+            LimeLog.info("UsbAudio: requesting permission for " + key);
+            usbManager.requestPermission(d, PendingIntent.getBroadcast(context, 0, i, flags));
+        } catch (SecurityException e) {
+            // Some device policies (e.g. Samsung Knox) throw instead of denying.
+            LimeLog.warning("UsbAudio: requestPermission blocked: " + e);
+            synchronized (lock) {
+                pendingPromptKey = null;
+            }
+            policy.onDenied(key);
+        }
+    }
+
+    private void enableAttachActivity() {
+        try {
+            context.getPackageManager().setComponentEnabledSetting(
+                    new ComponentName(context, UsbAudioAttachActivity.class),
+                    PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                    PackageManager.DONT_KILL_APP);
+        } catch (RuntimeException e) {
+            LimeLog.warning("UsbAudio: cannot enable attach activity: " + e);
+        }
+    }
+
+    /** A candidate exists and Artemis has permission for it. */
+    public boolean isHeadsetReady() {
+        return ready;
+    }
+
+    /**
+     * Returns the shared headset (opening it on first use) and takes a reference, or null.
+     * Returns null while a detached headset is still referenced; its holders must release it first.
+     */
+    UsbHeadset acquire() {
+        UsbHeadset opened;
+        synchronized (lock) {
+            UsbHeadset h = active;
+            if (h != null) {
+                if (!h.isAlive()) return null;
+                refCount++;
+                return h;
+            }
+            UsbDevice d = findCandidateInternal();
+            if (d == null || !hasPermission(d)) return null;
+            opened = UsbHeadset.open(usbManager, d);
+            if (opened == null) return null;
+            active = opened;
+            refCount = 1;
+        }
+        retargetGain(opened.deviceKey());
+        return opened;
+    }
+
+    /** Drops a reference taken by acquire(); closes the headset when the last one goes. */
+    void release(UsbHeadset h) {
+        if (h == null) return;
+        UsbHeadset toClose = null;
+        synchronized (lock) {
+            if (h != active) {
+                LimeLog.warning("UsbAudio: release of a headset that is not active");
+                return;
+            }
+            if (--refCount <= 0) {
+                refCount = 0;
+                active = null;
+                toClose = h;
+            }
+        }
+        if (toClose != null) {
+            // Outside the lock: close may wait for one in-flight readCapture timeout.
+            toClose.close();
+            refresh();
+        }
+    }
+
+    UsbHeadset activeHeadset() {
+        return active;
+    }
+
+    public void addListener(Listener l) {
+        if (l != null) listeners.addIfAbsent(l);
+    }
+
+    public void removeListener(Listener l) {
+        listeners.remove(l);
+    }
+
+    // ---- Gain store ----
+
+    /** Gain level of the active headset, else the current candidate; default if there is none. */
+    public int getGainLevel() {
+        String k = gainKey;
+        return k == null ? PcmConverter.DEFAULT_GAIN_LEVEL : getGainLevel(k);
+    }
+
+    /** Sets the level for the active headset, else the current candidate; no-op if there is none. */
+    public void setGainLevel(int level) {
+        String k = gainKey;
+        if (k != null) setGainLevel(k, level);
+    }
+
+    /** Linear gain for the current target headset. Lock-free; read from the audio thread. */
+    public float currentGain() {
+        return gain;
+    }
+
+    int getGainLevel(String deviceKey) {
+        return clampLevel(prefs.getInt(prefKey(deviceKey), PcmConverter.DEFAULT_GAIN_LEVEL));
+    }
+
+    void setGainLevel(String deviceKey, int level) {
+        int l = clampLevel(level);
+        synchronized (gainLock) {
+            prefs.edit().putInt(prefKey(deviceKey), l).apply();
+            if (deviceKey.equals(gainKey)) gain = PcmConverter.gainForLevel(l);
+        }
+    }
+
+    private void retargetGain(String deviceKey) {
+        synchronized (gainLock) {
+            if (deviceKey == null ? gainKey == null : deviceKey.equals(gainKey)) return;
+            gainKey = deviceKey;
+            gain = PcmConverter.gainForLevel(deviceKey == null
+                    ? PcmConverter.DEFAULT_GAIN_LEVEL : getGainLevel(deviceKey));
+        }
+    }
+
+    private static int clampLevel(int level) {
+        return Math.max(0, Math.min(PcmConverter.MAX_GAIN_LEVEL, level));
+    }
+
+    /** "046d:0adf" -> "usb_audio_gain_046d_0adf". */
+    private static String prefKey(String deviceKey) {
+        return GAIN_PREF_PREFIX + deviceKey.replace(':', '_');
+    }
+
+    private static String keyOf(UsbDevice d) {
+        return UsbAudioPermissionPolicy.deviceKey(d.getVendorId(), d.getProductId());
+    }
+}

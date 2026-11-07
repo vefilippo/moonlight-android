@@ -242,6 +242,23 @@
         <activity android:name=".DebugInfoActivity"
             android:launchMode="singleTask"/>
 
+        <!-- Enabled at runtime only before the first USB permission prompt for a headset
+             Android cannot drive, so the dialog offers "Always open Artemis" (permanent grant). -->
+        <activity
+            android:name=".binding.audio.usb.UsbAudioAttachActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true">
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_audio_device_filter" />
+        </activity>
+
         <!-- 无障碍 实体键盘 屏蔽某些快捷键 -->
         <service
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
