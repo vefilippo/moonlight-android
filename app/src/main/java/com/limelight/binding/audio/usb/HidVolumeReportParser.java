@@ -31,7 +31,8 @@ final class HidVolumeReportParser {
     /** Marks a usage that was given as a 32-bit item and already carries its page. */
     private static final long EXTENDED = 1L << 32;
     private static final int MAX_RANGE = 0x10000;
-    private static final long MAX_REPORT_BITS = 1 << 20;
+    /** Cap on one report's total bits (4096 bytes); also keeps every bit offset a small positive int. */
+    private static final long MAX_REPORT_BITS = 8 * 4096;
 
     private HidVolumeReportParser() {}
 
@@ -65,8 +66,8 @@ final class HidVolumeReportParser {
 
             if (type == TYPE_MAIN) {
                 if (tag == MAIN_INPUT) {
-                    if ((long) reportSize * reportCount > MAX_REPORT_BITS) return null;
                     int offset = inputBits.containsKey(reportId) ? inputBits.get(reportId) : 0;
+                    if (offset + (long) reportSize * reportCount > MAX_REPORT_BITS) return null;
                     boolean data = (u & 1) == 0;
                     boolean variable = (u & 2) != 0;
                     boolean idOk = foundId == -1 || foundId == reportId;

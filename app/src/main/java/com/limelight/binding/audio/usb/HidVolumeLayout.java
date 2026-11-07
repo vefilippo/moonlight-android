@@ -42,7 +42,7 @@ final class HidVolumeLayout {
             for (int i = 0; i < bitSize; i++) {
                 int bit = bitOffset + i;
                 int idx = dataStart + (bit >> 3);
-                if (idx < len && ((b[idx] >> (bit & 7)) & 1) != 0) v |= 1L << i;
+                if (idx >= 0 && idx < len &&((b[idx] >> (bit & 7)) & 1) != 0) v |= 1L << i;
             }
             return (int) v;
         }

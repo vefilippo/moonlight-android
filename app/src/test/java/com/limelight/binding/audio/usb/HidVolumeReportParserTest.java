@@ -159,6 +159,35 @@ public class HidVolumeReportParserTest {
         assertEquals(0, l.increment.bitOffset);
     }
 
+    @Test public void oversizedReportIsRejected() {
+        // 5 constant Inputs of 32 bits x 255 = 40800 bits, past the 8 x 4096-bit cap, then Vol+.
+        byte[] pad = bytes(0x75, 0x20, 0x95, 0xFF, 0x81, 0x03);
+        byte[] head = bytes(0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01, 0x15, 0x00, 0x25, 0x01);
+        byte[] tail = bytes(0x75, 0x01, 0x95, 0x01, 0x09, 0xE9, 0x81, 0x02, 0xC0);
+        byte[] d = new byte[head.length + 5 * pad.length + tail.length];
+        System.arraycopy(head, 0, d, 0, head.length);
+        for (int k = 0; k < 5; k++) System.arraycopy(pad, 0, d, head.length + k * pad.length, pad.length);
+        System.arraycopy(tail, 0, d, head.length + 5 * pad.length, tail.length);
+        assertNull(HidVolumeReportParser.parse(d));
+
+        // Each item alone is fine: 4 of them (32640 bits) still fit, and Vol+ is found after them.
+        byte[] ok = new byte[head.length + 4 * pad.length + tail.length];
+        System.arraycopy(head, 0, ok, 0, head.length);
+        for (int k = 0; k < 4; k++) System.arraycopy(pad, 0, ok, head.length + k * pad.length, pad.length);
+        System.arraycopy(tail, 0, ok, head.length + 4 * pad.length, tail.length);
+        HidVolumeLayout l = HidVolumeReportParser.parse(ok);
+        assertNotNull(l);
+        assertEquals(32640, l.increment.bitOffset);
+    }
+
+    @Test public void negativeOffsetsNeverIndexOutOfBounds() {
+        HidVolumeLayout.Field f = new HidVolumeLayout.Field(HidVolumeLayout.Field.VARIABLE, -64, 8, 1, 0);
+        HidVolumeLayout.Field a = new HidVolumeLayout.Field(HidVolumeLayout.Field.ARRAY, -8, 8, 4, 0xE9);
+        byte[] r = bytes(0xFF, 0xFF, 0xFF, 0xFF);
+        assertEquals(false, f.isPressed(r, 0, r.length));
+        assertEquals(false, a.isPressed(r, 0, r.length));
+    }
+
     @Test public void garbageAndTruncationAreSafe() {
         assertNull(HidVolumeReportParser.parse(null));
         assertNull(HidVolumeReportParser.parse(new byte[0]));
