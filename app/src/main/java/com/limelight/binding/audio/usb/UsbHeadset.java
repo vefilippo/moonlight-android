@@ -195,13 +195,20 @@ final class UsbHeadset {
         }
     }
 
-    /** Selects the alt setting, sets the rate, unmutes and starts capturing. Idempotent once started. */
+    /**
+     * Selects the alt setting, sets the rate, unmutes and starts capturing. Idempotent once
+     * started (native start is not repeated); a repeat call drains stale captured data.
+     */
     boolean startCapture() {
         lock.readLock().lock();
         try {
             if (handle == 0 || capture == null) return false;
             synchronized (this) {
-                if (captureStarted) return true;
+                if (captureStarted) {
+                    // Shared headset: a new capture user must not get audio queued for the last one.
+                    drainCapture();
+                    return true;
+                }
                 UacDescriptors.AltSetting alt = capture.alt;
                 if (!selectAlt(alt.interfaceNumber, alt.alternateSetting)) return false;
                 control.setSampleRate(alt, capture.sampleRate); // logs; non-fatal (fixed-rate devices)
@@ -220,6 +227,15 @@ final class UsbHeadset {
             return false;
         } finally {
             lock.readLock().unlock();
+        }
+    }
+
+    /** Discards captured data already queued. Caller holds the read lock with handle != 0. */
+    private void drainCapture() {
+        byte[] scratch = new byte[Math.max(capture.frameBytes(), 1) * 480];
+        // Bounded so a device that keeps up with timeout-0 reads cannot spin us forever.
+        for (int i = 0; i < 1000; i++) {
+            if (UsbAudioNative.readCapture(handle, scratch, scratch.length, 0) <= 0) return;
         }
     }
 

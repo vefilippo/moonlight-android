@@ -11,6 +11,8 @@ import static com.limelight.utils.ServerHelper.getSecondaryDisplay;
 import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.audio.AndroidAudioRenderer;
 import com.limelight.binding.audio.MicrophoneCaptureManager;
+import com.limelight.binding.audio.usb.UsbAudioManager;
+import com.limelight.binding.audio.usb.UsbAudioRenderer;
 import com.limelight.binding.input.ControllerHandler;
 import com.limelight.binding.input.GameInputDevice;
 import com.limelight.binding.input.KeyboardTranslator;
@@ -83,6 +85,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.PersistableBundle;
+import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.util.Rational;
@@ -875,8 +878,16 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 // Der Decoder erhält die jeweils aktive Oberfläche vom Container
                 decoderRenderer.setRenderTarget(streamContainer.getSurface());
 
+                // Userspace USB headset driver: game audio goes to the headset when Artemis
+                // drives one, else (and live on unplug) to the regular Android output.
+                UsbAudioManager usbAudio = UsbAudioManager.getInstance(Game.this);
+                usbAudio.start();
+                usbAudio.requestAccessIfNeeded();
+
                 // Starten Sie die NvConnection
-                conn.start(new AndroidAudioRenderer(Game.this, prefConfig.playHostAudio),
+                conn.start(new UsbAudioRenderer(usbAudio,
+                                new AndroidAudioRenderer(Game.this, prefConfig.playHostAudio),
+                                SystemClock::elapsedRealtime),
                         decoderRenderer, Game.this);
             }
         });

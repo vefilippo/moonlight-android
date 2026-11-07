@@ -25,7 +25,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Process-wide owner of the userspace USB headset: detection, the one-time permission prompt,
  * a reference-counted shared UsbHeadset, and the per-headset gain store.
  */
-public final class UsbAudioManager {
+public final class UsbAudioManager implements UsbAudioRenderer.PlaybackProvider {
     static final String ACTION_USB_AUDIO_PERMISSION = "com.limelight.USB_AUDIO_PERMISSION";
     private static final String GAIN_PREF_PREFIX = "usb_audio_gain_";
 
@@ -53,6 +53,8 @@ public final class UsbAudioManager {
     // Guarded by lock
     private boolean started;
     private int refCount;
+    /** A thread is inside UsbHeadset.open (outside the lock); acquirers wait on lock. */
+    private boolean opening;
     private String pendingPromptKey;
     private volatile UsbHeadset active;
     private volatile boolean ready;
@@ -231,6 +233,7 @@ public final class UsbAudioManager {
     }
 
     /** A candidate exists and Artemis has permission for it. */
+    @Override
     public boolean isHeadsetReady() {
         return ready;
     }
@@ -240,23 +243,89 @@ public final class UsbAudioManager {
      * Returns null while a detached headset is still referenced; its holders must release it first.
      */
     UsbHeadset acquire() {
-        UsbHeadset opened;
         synchronized (lock) {
+            // Only one thread opens; others wait (releasing the lock) and then share its result.
+            while (opening) {
+                try {
+                    lock.wait();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+            }
             UsbHeadset h = active;
             if (h != null) {
                 if (!h.isAlive()) return null;
                 refCount++;
                 return h;
             }
-            UsbDevice d = findCandidateInternal();
-            if (d == null || !hasPermission(d)) return null;
-            opened = UsbHeadset.open(usbManager, d);
-            if (opened == null) return null;
-            active = opened;
-            refCount = 1;
+            opening = true;
         }
-        retargetGain(opened.deviceKey());
+        // Outside the lock: open does USB control transfers and binder calls that can block for
+        // seconds, and the main-thread broadcast receiver needs the lock on unplug.
+        UsbHeadset opened = null;
+        try {
+            UsbDevice d = findCandidateInternal();
+            if (d != null && hasPermission(d)) {
+                opened = UsbHeadset.open(usbManager, d);
+            }
+        } finally {
+            synchronized (lock) {
+                opening = false;
+                if (opened != null) {
+                    active = opened;
+                    refCount = 1;
+                }
+                lock.notifyAll();
+            }
+        }
+        if (opened != null) retargetGain(opened.deviceKey());
         return opened;
+    }
+
+    /**
+     * Acquires the shared headset for game-audio playback. Null if there is no headset or it has
+     * no playback direction (the reference is dropped again in that case).
+     */
+    @Override
+    public UsbAudioRenderer.PlaybackOutput openPlayback() {
+        final UsbHeadset h = acquire();
+        if (h == null) return null;
+        final UacStreamConfig cfg = h.playbackConfig();
+        if (cfg == null) {
+            release(h);
+            return null;
+        }
+        return new UsbAudioRenderer.PlaybackOutput() {
+            private boolean closed;
+
+            @Override
+            public UacStreamConfig config() {
+                return cfg;
+            }
+
+            @Override
+            public boolean start() {
+                return h.startPlayback();
+            }
+
+            @Override
+            public int write(byte[] data, int length) {
+                return h.writePlayback(data, length);
+            }
+
+            @Override
+            public boolean isAlive() {
+                return h.isAlive();
+            }
+
+            @Override
+            public synchronized void close() {
+                if (closed) return;
+                closed = true;
+                release(h);
+            }
+        };
     }
 
     /** Drops a reference taken by acquire(); closes the headset when the last one goes. */
@@ -308,6 +377,7 @@ public final class UsbAudioManager {
     }
 
     /** Linear gain for the current target headset. Lock-free; read from the audio thread. */
+    @Override
     public float currentGain() {
         return gain;
     }

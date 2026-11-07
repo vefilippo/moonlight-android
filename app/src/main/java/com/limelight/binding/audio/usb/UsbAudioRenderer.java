@@ -1,0 +1,261 @@
+package com.limelight.binding.audio.usb;
+
+import com.limelight.LimeLog;
+import com.limelight.nvstream.av.audio.AudioRenderer;
+import com.limelight.nvstream.jni.MoonBridge;
+
+/**
+ * Game-audio renderer that plays to the Artemis-driven USB headset when one is available and
+ * otherwise delegates to a fallback renderer (AndroidAudioRenderer), switching live in both
+ * directions: to the fallback on unplug/stream death, back to USB when a headset becomes ready.
+ *
+ * Threading: all AudioRenderer methods are synchronized. playDecodedAudio runs on the audio
+ * decoder thread; it allocates only when switching outputs and never lets exceptions escape.
+ */
+public class UsbAudioRenderer implements AudioRenderer {
+    /** Stream input format: 48 kHz interleaved 16-bit PCM. */
+    private static final int INPUT_RATE = 48000;
+    private static final int MAX_INPUT_CHANNELS = 8;
+    /** How often the fallback path polls for a usable headset. */
+    static final long RECHECK_INTERVAL_MS = 500;
+
+    /** One acquired playback stream. close() releases it and is called exactly once. */
+    public interface PlaybackOutput {
+        UacStreamConfig config();
+        boolean start();
+        /** Bytes accepted, or negative if the stream is gone/closed. */
+        int write(byte[] data, int length);
+        boolean isAlive();
+        void close();
+    }
+
+    public interface PlaybackProvider {
+        boolean isHeadsetReady();
+        /** Nullable. */
+        PlaybackOutput openPlayback();
+        float currentGain();
+    }
+
+    /**
+     * Millisecond clock. Declared here instead of java.util.function.LongSupplier, which does not
+     * exist below API 24 (minSdk is 21 and core-library desugaring is not enabled).
+     */
+    public interface LongSupplier {
+        long getAsLong();
+    }
+
+    private final PlaybackProvider provider;
+    private final AudioRenderer fallback;
+    private final LongSupplier clockMs;
+
+    // Stored stream parameters
+    private MoonBridge.AudioConfiguration audioConfig;
+    private int sampleRate;
+    private int samplesPerFrame;
+    private int inChannels;
+    private boolean started;
+
+    // USB path; output != null means USB is the active path
+    private PlaybackOutput output;
+    private int devChannels;
+    private int subframeBytes;
+    private int chunkFrames;
+    private LinearResampler resampler;
+    private short[] inBuf;
+    private short[] mixBuf;
+    private short[] resampleBuf;
+    private byte[] packBuf;
+
+    // Fallback path
+    private boolean fallbackSetUp;
+    private long lastCheckMs;
+
+    public UsbAudioRenderer(PlaybackProvider provider, AudioRenderer fallback, LongSupplier clockMs) {
+        this.provider = provider;
+        this.fallback = fallback;
+        this.clockMs = clockMs;
+    }
+
+    @Override
+    public synchronized int setup(MoonBridge.AudioConfiguration audioConfiguration, int sampleRate, int samplesPerFrame) {
+        this.audioConfig = audioConfiguration;
+        this.sampleRate = sampleRate;
+        this.samplesPerFrame = samplesPerFrame;
+        this.inChannels = Math.max(1, Math.min(MAX_INPUT_CHANNELS, audioConfiguration.channelCount));
+
+        if (tryOpenUsb()) {
+            return 0;
+        }
+        lastCheckMs = clockMs.getAsLong();
+        int r = fallback.setup(audioConfiguration, sampleRate, samplesPerFrame);
+        fallbackSetUp = r == 0;
+        return r;
+    }
+
+    @Override
+    public synchronized void start() {
+        started = true;
+        if (output == null && fallbackSetUp) {
+            fallback.start();
+        }
+    }
+
+    @Override
+    public synchronized void stop() {
+        started = false;
+        if (output == null && fallbackSetUp) {
+            fallback.stop();
+        }
+    }
+
+    @Override
+    public synchronized void playDecodedAudio(short[] audioData) {
+        if (output != null) {
+            if (playUsb(audioData)) return;
+            switchToFallback();
+        } else {
+            maybeSwitchToUsb();
+            if (output != null && playUsb(audioData)) return;
+            if (output != null) switchToFallback();
+        }
+        if (fallbackSetUp) {
+            fallback.playDecodedAudio(audioData);
+        }
+    }
+
+    @Override
+    public synchronized void cleanup() {
+        closeOutput();
+        if (fallbackSetUp) {
+            fallbackSetUp = false;
+            fallback.cleanup();
+        }
+    }
+
+    // ---- USB path ----
+
+    /** Opens and starts a USB output and sizes the buffers for it. Never throws. */
+    private boolean tryOpenUsb() {
+        PlaybackOutput out = null;
+        try {
+            if (!provider.isHeadsetReady()) return false;
+            out = provider.openPlayback();
+            if (out == null) return false;
+            UacStreamConfig cfg = out.config();
+            if (cfg == null || !out.start()) {
+                out.close();
+                return false;
+            }
+            configureBuffers(cfg);
+            output = out;
+            LimeLog.info("UsbAudio: game audio on USB headset (" + cfg.sampleRate + " Hz, "
+                    + devChannels + " ch, " + (subframeBytes * 8) + " bit)");
+            return true;
+        } catch (RuntimeException e) {
+            LimeLog.warning("UsbAudio: cannot open USB playback: " + e);
+            if (out != null) {
+                try {
+                    out.close();
+                } catch (RuntimeException ignored) {
+                }
+            }
+            return false;
+        }
+    }
+
+    private void configureBuffers(UacStreamConfig cfg) {
+        devChannels = Math.max(1, cfg.alt.channels);
+        subframeBytes = cfg.alt.subframeBytes;
+        // 10 ms at the stream rate, or one decoded frame if that is longer
+        chunkFrames = Math.max(Math.max(1, samplesPerFrame), INPUT_RATE / 100);
+        int maxOut = LinearResampler.maxOutputFrames(chunkFrames, INPUT_RATE, cfg.sampleRate);
+        inBuf = new short[chunkFrames * MAX_INPUT_CHANNELS];
+        mixBuf = new short[chunkFrames * devChannels];
+        resampleBuf = new short[maxOut * devChannels];
+        packBuf = new byte[maxOut * devChannels * subframeBytes];
+        resampler = new LinearResampler(INPUT_RATE, cfg.sampleRate, devChannels);
+    }
+
+    /** @return false if the output died and the caller must switch to the fallback. */
+    private boolean playUsb(short[] audioData) {
+        try {
+            PlaybackOutput out = output;
+            if (!out.isAlive()) return false;
+            float gain = provider.currentGain();
+            int frames = audioData.length / inChannels;
+            for (int off = 0; off < frames; off += chunkFrames) {
+                int n = Math.min(chunkFrames, frames - off);
+                short[] src = audioData;
+                if (off != 0) {
+                    // Only when a decoded frame is longer than one chunk (not seen in practice)
+                    System.arraycopy(audioData, off * inChannels, inBuf, 0, n * inChannels);
+                    src = inBuf;
+                }
+                int mixed = PcmConverter.toDeviceChannels(src, n, inChannels, devChannels, mixBuf);
+                int outFrames = resampler.process(mixBuf, mixed, resampleBuf);
+                int len = PcmConverter.pack(resampleBuf, outFrames * devChannels, subframeBytes, gain, packBuf);
+                if (len > 0 && out.write(packBuf, len) < 0) return false;
+            }
+            return true;
+        } catch (RuntimeException e) {
+            LimeLog.warning("UsbAudio: USB playback failed: " + e);
+            return false;
+        }
+    }
+
+    private void closeOutput() {
+        PlaybackOutput out = output;
+        if (out == null) return;
+        output = null;
+        try {
+            out.close();
+        } catch (RuntimeException e) {
+            LimeLog.warning("UsbAudio: closing USB playback failed: " + e);
+        }
+    }
+
+    // ---- Switching ----
+
+    private void switchToFallback() {
+        LimeLog.info("UsbAudio: USB headset stream lost, switching game audio to Android output");
+        closeOutput();
+        lastCheckMs = clockMs.getAsLong();
+        ensureFallback();
+    }
+
+    /** Sets up (and starts, if the stream is running) the fallback if it is not already. */
+    private void ensureFallback() {
+        if (fallbackSetUp || audioConfig == null) return;
+        try {
+            int r = fallback.setup(audioConfig, sampleRate, samplesPerFrame);
+            if (r != 0) {
+                LimeLog.warning("UsbAudio: fallback renderer setup failed (" + r + ")");
+                return;
+            }
+            fallbackSetUp = true;
+            if (started) fallback.start();
+        } catch (RuntimeException e) {
+            LimeLog.warning("UsbAudio: fallback renderer setup failed: " + e);
+        }
+    }
+
+    private void maybeSwitchToUsb() {
+        long now = clockMs.getAsLong();
+        if (now - lastCheckMs < RECHECK_INTERVAL_MS) return;
+        lastCheckMs = now;
+        if (tryOpenUsb()) {
+            if (fallbackSetUp) {
+                fallbackSetUp = false;
+                try {
+                    fallback.stop();
+                    fallback.cleanup();
+                } catch (RuntimeException e) {
+                    LimeLog.warning("UsbAudio: fallback renderer cleanup failed: " + e);
+                }
+            }
+        } else {
+            // Retry a fallback whose earlier setup failed, at the same cadence
+            ensureFallback();
+        }
+    }
+}
