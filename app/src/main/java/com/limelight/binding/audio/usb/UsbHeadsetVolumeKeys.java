@@ -24,8 +24,12 @@ public final class UsbHeadsetVolumeKeys {
     }
 
     static int nextLevel(int level, int keyCode) {
-        int next = level + (keyCode == KeyEvent.KEYCODE_VOLUME_UP ? 1 : -1);
-        return Math.max(0, Math.min(PcmConverter.MAX_GAIN_LEVEL, next));
+        return stepLevel(level, keyCode == KeyEvent.KEYCODE_VOLUME_UP ? 1 : -1);
+    }
+
+    /** level + delta, clamped to 0..MAX_GAIN_LEVEL. */
+    static int stepLevel(int level, int delta) {
+        return Math.max(0, Math.min(PcmConverter.MAX_GAIN_LEVEL, level + delta));
     }
 
     /** Gain level (0..MAX_GAIN_LEVEL) as the percentage shown to the user. */
