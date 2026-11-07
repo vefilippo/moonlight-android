@@ -3,6 +3,8 @@ package com.limelight.binding.audio.usb;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -161,7 +163,7 @@ public class UacControlTest {
     private static FakeTransport uac1Volume(int max) {
         FakeTransport t = new FakeTransport();
         t.responder = (c, b) -> {
-            if (c.req == 0x84) le(b, 0, 2, max);
+            if (c.req == 0x83) le(b, 0, 2, max);
             return c.length;
         };
         return t;
@@ -178,7 +180,7 @@ public class UacControlTest {
         assertEquals(0x0100, m.value); assertEquals(0x0503, m.index);
         assertArrayEquals(new byte[]{0}, m.data);
         Call g = t.calls.get(1);
-        assertEquals(0xA1, g.type); assertEquals(0x84, g.req);
+        assertEquals(0xA1, g.type); assertEquals(0x83, g.req);
         assertEquals(0x0200, g.value); assertEquals(0x0503, g.index);
         assertEquals(2, g.length);
         Call s = t.calls.get(2);
@@ -221,6 +223,100 @@ public class UacControlTest {
         Call s = t.calls.get(3);
         assertEquals(0x21, s.type); assertEquals(0x01, s.req);
         assertArrayEquals(new byte[]{0x00, (byte) 0xF8}, s.data);
+    }
+
+    @Test public void unitySkipsTheHardwareVolumeUnit() {
+        FakeTransport t = uac1Volume(0);
+        UacDescriptors d = desc(1, 1);
+        d.featureUnits.add(fu(2, true, true));
+        d.featureUnits.add(fu(5, true, true));
+        new UacControl(t, d).unmuteAndSetUnityVolume(5);
+        assertEquals(3, t.calls.size());
+        for (Call k : t.calls) assertEquals(0x0201, k.index);
+    }
+
+    @Test public void uac1ReadsVolumeMinMaxRes() {
+        FakeTransport t = new FakeTransport();
+        t.responder = (c, b) -> {
+            if (c.req == 0x82) le(b, 0, 2, 0xC400);      // -60 dB
+            else if (c.req == 0x83) le(b, 0, 2, 0x0600); // +6 dB
+            else if (c.req == 0x84) le(b, 0, 2, 0x0080); // 0.5 dB
+            return c.length;
+        };
+        UacControl.VolumeRange r = new UacControl(t, desc(1, 1)).readVolumeRange(5);
+        assertNotNull(r);
+        assertEquals(-60 * 256, r.min);
+        assertEquals(6 * 256, r.max);
+        assertEquals(128, r.res);
+        assertEquals(3, t.calls.size());
+        int[] reqs = {0x82, 0x83, 0x84};
+        for (int i = 0; i < 3; i++) {
+            Call k = t.calls.get(i);
+            assertEquals(0xA1, k.type);
+            assertEquals(reqs[i], k.req);
+            assertEquals(0x0200, k.value);
+            assertEquals(0x0501, k.index);
+            assertEquals(2, k.length);
+        }
+    }
+
+    @Test public void uac1VolumeRangeFailsWithoutMinOrMax() {
+        FakeTransport t = new FakeTransport();
+        t.responder = (c, b) -> c.req == 0x83 ? -1 : c.length;
+        assertNull(new UacControl(t, desc(1, 1)).readVolumeRange(5));
+    }
+
+    @Test public void uac1MissingResDefaultsToOne() {
+        FakeTransport t = new FakeTransport();
+        t.responder = (c, b) -> {
+            if (c.req == 0x84) return -1;
+            if (c.req == 0x82) le(b, 0, 2, 0xE200);
+            return c.length;
+        };
+        UacControl.VolumeRange r = new UacControl(t, desc(1, 1)).readVolumeRange(5);
+        assertNotNull(r);
+        assertEquals(1, r.res);
+        assertEquals((short) 0xE200, r.min);
+        assertEquals(0, r.max);
+    }
+
+    @Test public void uac2VolumeRangeSpansSubranges() {
+        FakeTransport t = new FakeTransport();
+        t.responder = (c, b) -> {
+            le(b, 0, 2, 2);
+            if (c.length > 2) {
+                le(b, 2, 2, 0xE000); le(b, 4, 2, 0xF000); le(b, 6, 2, 0x0100);
+                le(b, 8, 2, 0xF000); le(b, 10, 2, 0x0000); le(b, 12, 2, 0x0080);
+            }
+            return c.length;
+        };
+        UacControl.VolumeRange r = new UacControl(t, desc(2, 0)).readVolumeRange(7);
+        assertNotNull(r);
+        assertEquals((short) 0xE000, r.min);
+        assertEquals(0, r.max);
+        assertEquals(0x0100, r.res);
+        assertEquals(0x02, t.calls.get(0).req);
+        assertEquals(0x0700, t.calls.get(0).index);
+    }
+
+    @Test public void setVolumeAndMuteRequestBytes() {
+        FakeTransport t = new FakeTransport();
+        UacControl c = new UacControl(t, desc(1, 1));
+        assertTrue(c.setVolume(5, -15 * 256));
+        assertTrue(c.setMute(5, true));
+        assertTrue(c.setMute(5, false));
+        Call v = t.calls.get(0);
+        assertEquals(0x21, v.type); assertEquals(0x01, v.req);
+        assertEquals(0x0200, v.value); assertEquals(0x0501, v.index);
+        assertArrayEquals(new byte[]{0x00, (byte) 0xF1}, v.data);
+        Call m = t.calls.get(1);
+        assertEquals(0x21, m.type); assertEquals(0x01, m.req);
+        assertEquals(0x0100, m.value); assertEquals(0x0501, m.index);
+        assertArrayEquals(new byte[]{1}, m.data);
+        assertArrayEquals(new byte[]{0}, t.calls.get(2).data);
+        t.responder = (k, b) -> -1;
+        assertFalse(c.setVolume(5, 0));
+        assertFalse(c.setMute(5, true));
     }
 
     @Test public void failuresAreIgnored() {
