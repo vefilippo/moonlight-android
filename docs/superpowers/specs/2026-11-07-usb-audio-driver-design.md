@@ -50,7 +50,8 @@ existing microphone-streaming feature.
 - Breaking or changing behaviour for users whose headsets Android already
   supports (phones with USB-C headsets, most TV boxes).
 - Stealing the headset's HID interface: the G435's volume wheel/buttons and
-  other HID functions must keep working through Android.
+  other HID functions must keep working through Android. (Revised for
+  Android TV only, see "Headset wheel on Android TV via HID takeover".)
 - Noticeably worse latency or crackling compared with Artemis's normal
   AudioTrack path.
 - Crashing or hanging the stream when the headset is unplugged, turned off,
@@ -138,6 +139,17 @@ existing microphone-streaming feature.
   shows the percentage. Reason: Android TV routes VOLUME_UP/DOWN to the system
   before dispatch, so the G435 wheel never reaches Artemis there (zero volume
   key events logged). The wheel handling stays for phones.
+- **Headset wheel on Android TV via HID takeover (2026-11-07):** on leanback
+  devices only, while Artemis has the headset open and a stream has started,
+  Artemis claims the one HID interface whose report descriptor has Consumer
+  Volume Increment/Decrement in an Input report (no other HID interface is
+  ever claimed), reads the wheel from its interrupt endpoint and steps the
+  same per-headset gain, showing "Headset volume N%". When the headset is
+  closed (stream end, unplug, failure) the interface is released, which hands
+  it back to Android's HID driver. This revises the anti-goal "stealing the
+  headset's HID interface" **for Android TV only**, where the wheel does
+  nothing useful through Android anyway; phones keep the key-event path and
+  never have HID taken.
 
 ## Calls made by the designer (not discussed with the user)
 
