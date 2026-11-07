@@ -1,0 +1,49 @@
+# Synthetic UAC1 headset (modelled on the USB Audio 1.0 spec example). Not a real device dump.
+# device descriptor
+12 01 00 02 00 00 00 40  6d 04 df 0a 00 01 01 02 00 01
+# configuration descriptor: 4 interfaces, wTotalLength 218
+09 02 da 00 04 01 00 80 32
+# interface 0: AudioControl
+09 04 00 00 00 01 01 00 00
+# AC header, bcdADC 1.00, wTotalLength 71, streaming interfaces 1 and 2
+0a 24 01 00 01 47 00 02 01 02
+# input terminal 1 (USB streaming, 2ch)
+0c 24 02 01 01 01 00 02 03 00 00 00
+# feature unit 2 (source 1): master mute+volume
+0a 24 06 02 01 01 03 00 00 00
+# output terminal 3 (speaker, source 2)
+09 24 03 03 01 03 00 02 00
+# input terminal 4 (headset microphone, 1ch)
+0c 24 02 04 02 04 00 01 01 00 00 00
+# feature unit 5 (source 4): master mute+volume
+09 24 06 05 04 01 03 00 00
+# output terminal 6 (USB streaming, source 5)
+09 24 03 06 01 01 00 05 00
+# interface 1: AudioStreaming OUT, alt 0 (zero bandwidth)
+09 04 01 00 00 01 02 00 00
+# alt 1
+09 04 01 01 01 01 02 00 00
+# AS_GENERAL: terminal link 1, PCM
+07 24 01 01 01 01 00
+# FORMAT_TYPE_I: 2ch, 2 byte subframe, 16 bit, 1 rate: 48000
+0b 24 02 01 02 02 10 01 80 bb 00
+# endpoint 0x01 iso adaptive, 192 bytes, interval 1
+09 05 01 09 c0 00 01 00 00
+# CS endpoint: sampling frequency control
+07 25 01 01 00 00 00
+# interface 2: AudioStreaming IN, alt 0 (zero bandwidth)
+09 04 02 00 00 01 02 00 00
+# alt 1
+09 04 02 01 01 01 02 00 00
+# AS_GENERAL: terminal link 6, PCM
+07 24 01 06 01 01 00
+# FORMAT_TYPE_I: 1ch, 2 byte subframe, 16 bit, 1 rate: 16000
+0b 24 02 01 01 02 10 01 80 3e 00
+# endpoint 0x81 iso async, 32 bytes, interval 1
+09 05 81 05 20 00 01 00 00
+# CS endpoint
+07 25 01 00 00 00 00
+# interface 3: HID
+09 04 03 00 01 03 00 00 00
+09 21 11 01 00 01 22 34 00
+07 05 83 03 04 00 08
