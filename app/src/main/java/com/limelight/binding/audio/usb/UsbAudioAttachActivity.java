@@ -12,6 +12,9 @@ public class UsbAudioAttachActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // The system has just granted the default-package permission: refresh readiness now
+        // instead of waiting for the next broadcast.
+        UsbAudioManager.getInstance(this).findCandidate();
         finish();
     }
 }

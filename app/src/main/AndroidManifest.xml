@@ -249,6 +249,7 @@
             android:enabled="false"
             android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:taskAffinity=""
             android:excludeFromRecents="true"
             android:noHistory="true">
             <intent-filter>

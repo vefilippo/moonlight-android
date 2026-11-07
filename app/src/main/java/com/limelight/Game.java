@@ -256,7 +256,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
         LimeLog.info("UsbAudio: headset availability changed (" + available + "); restarting microphone capture");
         stopMicrophoneCapture();
-        startMicrophoneCapture();
+        startMicrophoneCapture(false); // no toasts for background restarts
     };
 
     private WifiManager.WifiLock highPerfWifiLock;
@@ -2061,6 +2061,24 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         return (byte) modifierFlags;
     }
 
+    /**
+     * Diagnostic only: logs whether volume keys (e.g. the USB headset wheel) reach the activity
+     * at all; Android TV may consume them before dispatch. Behaviour is unchanged.
+     */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        int code = event.getKeyCode();
+        if (code == KeyEvent.KEYCODE_VOLUME_UP || code == KeyEvent.KEYCODE_VOLUME_DOWN
+                || code == KeyEvent.KEYCODE_VOLUME_MUTE) {
+            InputDevice dev = event.getDevice();
+            LimeLog.info("UsbAudio: volume key action=" + event.getAction() + " keyCode=" + code
+                    + " deviceId=" + event.getDeviceId()
+                    + " device=" + (dev != null ? dev.getName() : "null")
+                    + " id=" + (dev != null ? String.format("%04x:%04x", dev.getVendorId(), dev.getProductId()) : "none"));
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         return handleKeyDown(event) || super.onKeyDown(keyCode, event);
@@ -3540,20 +3558,28 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         });
     }
 
-    private void startMicrophoneCapture() {
+    /**
+     * @param showToasts true on the connectionStarted path; false for listener-driven restarts,
+     *                   which must not repeat the transient failure messages
+     */
+    private void startMicrophoneCapture(final boolean showToasts) {
         if (!prefConfig.enableMicrophone) {
             return;
         }
 
         if (!MicrophoneCaptureManager.hasRecordAudioPermission(this)) {
             LimeLog.info("Skipping microphone capture because RECORD_AUDIO permission is missing");
-            displayTransientMessage(getString(R.string.microphone_stream_permission_revoked));
+            if (showToasts) {
+                displayTransientMessage(getString(R.string.microphone_stream_permission_revoked));
+            }
             return;
         }
 
         if (!MoonBridge.isMicrophoneStreamActive()) {
             LimeLog.info("Host did not negotiate microphone streaming");
-            displayTransientMessage(getString(R.string.microphone_host_not_negotiated));
+            if (showToasts) {
+                displayTransientMessage(getString(R.string.microphone_host_not_negotiated));
+            }
             return;
         }
 
@@ -3569,7 +3595,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
             if (!microphoneCaptureManager.startStreaming(deviceId, null)) {
                 LimeLog.warning("Unable to start local microphone capture for the current stream");
-                displayTransientMessage(startFailedMessage); // posts the toast to the UI thread
+                if (showToasts) {
+                    displayTransientMessage(startFailedMessage); // posts the toast to the UI thread
+                }
             }
         });
     }
@@ -3803,7 +3831,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 setupOverlayToggleButton();
 
                 hideSystemUi(1000);
-                startMicrophoneCapture();
+                startMicrophoneCapture(true);
 
                 if (prefConfig.preventPacketLoss) {
                     timerHandler.postDelayed(backgroundPing, 1000);
