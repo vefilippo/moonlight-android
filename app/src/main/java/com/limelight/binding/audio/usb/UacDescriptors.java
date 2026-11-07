@@ -62,27 +62,43 @@ public final class UacDescriptors {
     }
 
     /**
-     * Feature unit that controls the headset's playback volume, or null.
-     * Order of preference, never choosing a unit on the capture path (upstream of the capture
-     * alt's output terminal): a unit with master volume that is downstream of the playback
-     * input terminal and upstream of an output terminal; one downstream of the playback input
-     * terminal; the first unit with master volume.
+     * Feature unit that controls the headset's playback volume, or null (software gain).
+     * Never a unit on the capture path (upstream of the capture alt's output terminal).
+     * Preference: a unit with master volume downstream of the playback input terminal and
+     * upstream of an output terminal; then one downstream of the playback input terminal.
+     * If an output terminal is known to be fed by the playback input terminal, the path is
+     * resolved and there is no further fallback (a per-channel-only or missing playback unit
+     * means software gain). Only when the topology cannot resolve the path: the first unit
+     * with master volume that is not upstream of any known output terminal (such a unit would
+     * be on another path: microphone, sidetone).
      *
      * @param playbackTerminal terminalLink of the playback alt (USB streaming input terminal), -1 if none
      * @param captureTerminal  terminalLink of the capture alt (USB streaming output terminal), -1 if none
      */
     public FeatureUnit playbackVolumeUnit(int playbackTerminal, int captureTerminal) {
-        FeatureUnit onPath = null, fromInput = null, first = null;
+        FeatureUnit onPath = null, fromInput = null, fallback = null;
         for (FeatureUnit fu : featureUnits) {
             if (!fu.hasMasterVolume) continue;
             if (captureTerminal >= 0 && reaches(captureTerminal, fu.unitId)) continue;
-            if (first == null) first = fu;
             if (playbackTerminal >= 0 && reaches(fu.unitId, playbackTerminal)) {
                 if (fromInput == null) fromInput = fu;
                 if (onPath == null && feedsOutputTerminal(fu.unitId)) onPath = fu;
+            } else if (fallback == null && !feedsOutputTerminal(fu.unitId)) {
+                fallback = fu;
             }
         }
-        return onPath != null ? onPath : fromInput != null ? fromInput : first;
+        if (onPath != null) return onPath;
+        if (fromInput != null) return fromInput;
+        return playbackPathKnown(playbackTerminal) ? null : fallback;
+    }
+
+    /** Some output terminal is fed (through units) by the playback input terminal. */
+    private boolean playbackPathKnown(int playbackTerminal) {
+        if (playbackTerminal < 0) return false;
+        for (int ot : outputTerminals) {
+            if (ot != playbackTerminal && reaches(ot, playbackTerminal)) return true;
+        }
+        return false;
     }
 
     private boolean feedsOutputTerminal(int id) {

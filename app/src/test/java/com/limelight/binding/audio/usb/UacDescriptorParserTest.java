@@ -300,22 +300,64 @@ public class UacDescriptorParserTest {
         assertFalse(d.reaches(3, 4));
     }
 
+    /** Playback path unresolved: fall back only to a unit that feeds no known output terminal. */
     @Test
-    public void playbackVolumeUnitFallsBackToFirstNonCaptureUnitWithVolume() {
+    public void unresolvedPathFallsBackToUnitOffEveryKnownPath() {
         UacDescriptors d = new UacDescriptors();
-        UacDescriptors.FeatureUnit mic = fu(d, 2, 1, true);
-        fu(d, 5, 99, false); // no volume control
-        UacDescriptors.FeatureUnit other = fu(d, 7, 98, true);
-        d.unitSources.put(3, new int[]{2}); // OT 3 <- FU 2 (capture path)
+        fu(d, 2, 1, true);                   // mic: IT 1 -> FU 2 -> OT 3
+        ot(d, 3, 2);
+        fu(d, 5, 99, false);                 // no volume control
+        UacDescriptors.FeatureUnit other = fu(d, 7, 98, true); // feeds no known OT
         // playback terminal 4 is not connected to anything known
         assertEquals(other, d.playbackVolumeUnit(4, 3));
-        // without a capture terminal the first unit with volume wins
-        assertEquals(mic, d.playbackVolumeUnit(4, -1));
-        // capture-path unit only: none
+        // without a capture terminal the mic unit is still not chosen
+        assertEquals(other, d.playbackVolumeUnit(4, -1));
+        // only a unit upstream of an OT that does not carry playback: none
         UacDescriptors only = new UacDescriptors();
         fu(only, 2, 1, true);
-        only.unitSources.put(3, new int[]{2});
+        ot(only, 3, 2);
         assertNull(only.playbackVolumeUnit(4, 3));
+        assertNull(only.playbackVolumeUnit(4, -1));
+    }
+
+    /**
+     * IT 1 (stream) -> FU 2 (per-channel volume only) -> MU 9 <- FU 7 (sidetone) <- IT 4 (mic);
+     * MU 9 -> OT 3 (speaker); IT 4 -> FU 5 -> OT 6 (capture). The playback path is resolved and
+     * has no master volume: software gain, never the sidetone unit.
+     */
+    @Test
+    public void perChannelPlaybackUnitWithSidetoneMeansSoftwareGain() {
+        UacDescriptors d = new UacDescriptors();
+        fu(d, 2, 1, false);
+        fu(d, 7, 4, true);
+        d.unitSources.put(9, new int[]{2, 7});
+        ot(d, 3, 9);
+        fu(d, 5, 4, true);
+        ot(d, 6, 5);
+        assertNull(d.playbackVolumeUnit(1, 6));
+        assertNull(d.playbackVolumeUnit(1, -1));
+    }
+
+    /** G435-like: mic IT 1 -> FU 2 -> OT 3; IT 4 -> FU 5 -> OT 6. No capture alt chosen. */
+    @Test
+    public void noCaptureTerminalNeverChoosesMicUnit() {
+        UacDescriptors d = new UacDescriptors();
+        fu(d, 2, 1, true);
+        ot(d, 3, 2);
+        UacDescriptors.FeatureUnit play = fu(d, 5, 4, true);
+        ot(d, 6, 5);
+        assertEquals(play, d.playbackVolumeUnit(4, -1));
+        play.hasMasterVolume = false; // per-channel only: software gain, not the mic
+        assertNull(d.playbackVolumeUnit(4, -1));
+
+        UacDescriptors g435 = UacDescriptorParser.parse(fixture("g435_descriptors.hex"));
+        assertNotNull(g435);
+        assertEquals(5, g435.playbackVolumeUnit(4, -1).unitId);
+    }
+
+    private static void ot(UacDescriptors d, int id, int src) {
+        d.outputTerminals.add(id);
+        d.unitSources.put(id, new int[]{src});
     }
 
     @Test

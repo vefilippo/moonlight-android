@@ -139,8 +139,10 @@ public final class UacDescriptorParser {
             case AC_FEATURE_UNIT: {
                 UacDescriptors.FeatureUnit fu = new UacDescriptors.FeatureUnit();
                 fu.unitId = u8(raw, pos, 3);
-                fu.sourceId = u8(raw, pos, 4);
-                if (len >= 5) result.unitSources.put(fu.unitId, new int[]{fu.sourceId});
+                if (len >= 5) {
+                    fu.sourceId = u8(raw, pos, 4);
+                    result.unitSources.put(fu.unitId, new int[]{fu.sourceId});
+                }
                 if (uac2) {
                     // bmaControls[0] is a 32-bit bitmap, 2 bits per control, at offset 5
                     if (len >= 9) {
