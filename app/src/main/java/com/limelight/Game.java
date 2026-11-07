@@ -136,6 +136,9 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import android.view.SurfaceView;
 import android.view.ViewGroup;
 
@@ -236,7 +239,11 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     private MediaCodecDecoderRenderer decoderRenderer;
     private boolean reportedCrash;
+    /** Only accessed on microphoneExecutor. */
     private MicrophoneCaptureManager microphoneCaptureManager;
+    /** Single thread so microphone start/stop/restart stay strictly ordered off the main thread. */
+    private final ExecutorService microphoneExecutor =
+            Executors.newSingleThreadExecutor(r -> new Thread(r, "MicControl"));
     /** Restarts mic capture when the Artemis-driven USB headset appears or goes (main thread). */
     private final UsbAudioManager.Listener usbHeadsetMicListener = available -> {
         if (!connected || prefConfig == null || !prefConfig.enableMicrophone) {
@@ -1730,6 +1737,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     protected void onDestroy() {
         UsbAudioManager.getInstance(this).removeListener(usbHeadsetMicListener);
         stopMicrophoneCapture();
+        // Queued tasks (ending with the stop above) still run; later submissions are rejected.
+        microphoneExecutor.shutdown();
         super.onDestroy();
 
         instance = null;
@@ -3500,10 +3509,26 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
     }
 
-    private void stopMicrophoneCapture() {
-        if (microphoneCaptureManager != null) {
-            microphoneCaptureManager.stop();
+    /**
+     * Runs microphone start/stop work in order on the mic control thread, never on the main
+     * thread: opening the USB headset does control transfers that can block for seconds.
+     * microphoneCaptureManager is only touched from that thread.
+     */
+    private void runOnMicrophoneThread(Runnable task) {
+        try {
+            microphoneExecutor.execute(task);
         }
+        catch (RejectedExecutionException e) {
+            // Activity destroyed: capture was already stopped by the final queued stop.
+        }
+    }
+
+    private void stopMicrophoneCapture() {
+        runOnMicrophoneThread(() -> {
+            if (microphoneCaptureManager != null) {
+                microphoneCaptureManager.stop();
+            }
+        });
     }
 
     private void startMicrophoneCapture() {
@@ -3523,17 +3548,21 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             return;
         }
 
-        if (microphoneCaptureManager == null) {
-            microphoneCaptureManager = new MicrophoneCaptureManager(this);
-        }
+        final int deviceId = prefConfig.microphoneDeviceId;
+        final String startFailedMessage = getString(R.string.microphone_stream_start_failed);
+        runOnMicrophoneThread(() -> {
+            if (microphoneCaptureManager == null) {
+                microphoneCaptureManager = new MicrophoneCaptureManager(Game.this);
+            }
 
-        LimeLog.info("Starting microphone streaming on device id " + prefConfig.microphoneDeviceId +
-                " (encrypted=" + MoonBridge.isMicrophoneEncryptionEnabled() + ")");
+            LimeLog.info("Starting microphone streaming on device id " + deviceId +
+                    " (encrypted=" + MoonBridge.isMicrophoneEncryptionEnabled() + ")");
 
-        if (!microphoneCaptureManager.startStreaming(prefConfig.microphoneDeviceId, null)) {
-            LimeLog.warning("Unable to start local microphone capture for the current stream");
-            displayTransientMessage(getString(R.string.microphone_stream_start_failed));
-        }
+            if (!microphoneCaptureManager.startStreaming(deviceId, null)) {
+                LimeLog.warning("Unable to start local microphone capture for the current stream");
+                displayTransientMessage(startFailedMessage); // posts the toast to the UI thread
+            }
+        });
     }
 
     @Override

@@ -85,7 +85,8 @@ public class MicrophoneCaptureManager {
     private Thread captureThread;
     private volatile boolean running;
     private boolean streamingToHost;
-    private LevelListener levelListener;
+    /** Set by the controlling thread, read on the main thread by dispatchStatus. */
+    private volatile LevelListener levelListener;
     private String currentStatus;
     private double currentLevel;
     private boolean signalDetected;

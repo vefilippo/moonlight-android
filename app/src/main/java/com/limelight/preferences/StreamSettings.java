@@ -14,6 +14,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.app.Activity;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.Vibrator;
 
 import androidx.annotation.NonNull;
@@ -67,6 +68,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 public class StreamSettings extends AppCompatActivity {
     private PreferenceConfiguration previousPrefs;
@@ -174,6 +178,9 @@ public class StreamSettings extends AppCompatActivity {
 
         private PreferenceConfiguration prevPrefConfig;
         private MicrophoneCaptureManager microphoneCaptureManager;
+        /** Main thread only; preview start/stop run on it in order. */
+        private ExecutorService microphonePreviewExecutor;
+        private final Handler microphonePreviewHandler = new Handler(Looper.getMainLooper());
         private CheckBoxPreference microphoneEnablePreference;
         private ListPreference microphoneDevicePreference;
         private MicrophonePreviewPreference microphonePreviewPreference;
@@ -1106,6 +1113,22 @@ public class StreamSettings extends AppCompatActivity {
             }
         }
 
+        /**
+         * Runs preview start/stop work in order off the main thread: opening the USB headset does
+         * control transfers that can block for seconds. The manager is only used on this thread.
+         */
+        private void runOnMicrophonePreviewThread(Runnable task) {
+            if (microphonePreviewExecutor == null) {
+                microphonePreviewExecutor = Executors.newSingleThreadExecutor(
+                        r -> new Thread(r, "MicPreviewControl"));
+            }
+            try {
+                microphonePreviewExecutor.execute(task);
+            }
+            catch (RejectedExecutionException ignored) {
+            }
+        }
+
         private MicrophoneCaptureManager getMicrophoneCaptureManager() {
             if (microphoneCaptureManager == null) {
                 microphoneCaptureManager = new MicrophoneCaptureManager(requireContext());
@@ -1126,22 +1149,30 @@ public class StreamSettings extends AppCompatActivity {
                 return;
             }
 
-            if (!getMicrophoneCaptureManager().startPreview(
-                    getSelectedMicrophoneDeviceId(),
-                    (level, signalDetected, status) -> {
+            final MicrophoneCaptureManager manager = getMicrophoneCaptureManager();
+            final int deviceId = getSelectedMicrophoneDeviceId();
+            final MicrophoneCaptureManager.LevelListener listener = (level, signalDetected, status) -> {
+                if (microphonePreviewPreference != null) {
+                    microphonePreviewPreference.updatePreviewState(
+                            status, level, signalDetected);
+                }
+            };
+            final String openFailed = getString(R.string.microphone_preview_open_failed);
+            runOnMicrophonePreviewThread(() -> {
+                if (!manager.startPreview(deviceId, listener)) {
+                    microphonePreviewHandler.post(() -> {
                         if (microphonePreviewPreference != null) {
-                            microphonePreviewPreference.updatePreviewState(
-                                    status, level, signalDetected);
+                            microphonePreviewPreference.updatePreviewState(openFailed, 0.0, false);
                         }
-                    })) {
-                microphonePreviewPreference.updatePreviewState(
-                        getString(R.string.microphone_preview_open_failed), 0.0, false);
-            }
+                    });
+                }
+            });
         }
 
         private void stopMicrophonePreview() {
-            if (microphoneCaptureManager != null) {
-                microphoneCaptureManager.stop();
+            final MicrophoneCaptureManager manager = microphoneCaptureManager;
+            if (manager != null) {
+                runOnMicrophonePreviewThread(manager::stop);
             }
         }
 
@@ -1195,6 +1226,11 @@ public class StreamSettings extends AppCompatActivity {
         public void onDestroy() {
             stopMicrophonePreview();
             microphoneCaptureManager = null;
+            if (microphonePreviewExecutor != null) {
+                // The queued stop still runs; nothing new is accepted.
+                microphonePreviewExecutor.shutdown();
+                microphonePreviewExecutor = null;
+            }
             super.onDestroy();
         }
 
