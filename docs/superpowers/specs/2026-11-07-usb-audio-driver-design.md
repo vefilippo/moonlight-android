@@ -121,6 +121,23 @@ existing microphone-streaming feature.
   written to the standard, but verifying other headsets, simulated-device
   test suites, and regression testing on other Android devices are not
   required for this work.
+- **Permission on Android TV (2026-11-07, after the on-device test):** on
+  leanback devices (`PackageManager.FEATURE_LEANBACK`) Artemis does not enable
+  `UsbAudioAttachActivity`, so nothing pops up at plug-in, and disables it on
+  start if an earlier build enabled it. Permission is requested only when a
+  stream starts, once per plug-in or reboot. Phones keep enabling the activity
+  before the first prompt so the dialog offers "Always". Reason: on the
+  Chromecast with Google TV the dialog's "Always" stored no default
+  (`dumpsys usb` showed no device preference), and with the activity enabled
+  SystemUI's `TvUsbConfirmActivity` appeared on every re-plug with only
+  "allow". This replaces "one-time permission" on TV.
+- **In-stream headset volume (2026-11-07, after the on-device test):** the
+  in-stream game menu (`GameMenu`) gets a "Headset volume" entry, shown only
+  while Artemis drives a USB headset. It opens a D-pad-operable slider for the
+  same per-headset gain level (0..15, per VID:PID) as the volume wheel and
+  shows the percentage. Reason: Android TV routes VOLUME_UP/DOWN to the system
+  before dispatch, so the G435 wheel never reaches Artemis there (zero volume
+  key events logged). The wheel handling stays for phones.
 
 ## Calls made by the designer (not discussed with the user)
 
