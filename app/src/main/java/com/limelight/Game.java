@@ -13,6 +13,7 @@ import com.limelight.binding.audio.AndroidAudioRenderer;
 import com.limelight.binding.audio.MicrophoneCaptureManager;
 import com.limelight.binding.audio.usb.UsbAudioManager;
 import com.limelight.binding.audio.usb.UsbAudioRenderer;
+import com.limelight.binding.audio.usb.UsbHeadsetVolumeKeys;
 import com.limelight.binding.input.ControllerHandler;
 import com.limelight.binding.input.GameInputDevice;
 import com.limelight.binding.input.KeyboardTranslator;
@@ -2067,6 +2068,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     @Override
     public boolean handleKeyDown(KeyEvent event) {
+        if (UsbHeadsetVolumeKeys.handle(event, UsbAudioManager.getInstance(this), this::showHeadsetVolume, true)) {
+            return true;
+        }
+
         // Pass-through virtual navigation keys
         if ((event.getFlags() & KeyEvent.FLAG_VIRTUAL_HARD_KEY) != 0) {
             return false;
@@ -2158,6 +2163,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     @Override
     public boolean handleKeyUp(KeyEvent event) {
+        if (UsbHeadsetVolumeKeys.handle(event, UsbAudioManager.getInstance(this), this::showHeadsetVolume, false)) {
+            return true;
+        }
+
         // Pass-through virtual navigation keys
         if ((event.getFlags() & KeyEvent.FLAG_VIRTUAL_HARD_KEY) != 0) {
             return false;
@@ -3828,6 +3837,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 Toast.makeText(Game.this, message, Toast.LENGTH_LONG).show();
             }
         });
+    }
+
+    private void showHeadsetVolume(int percent) {
+        displayTransientMessage(getString(R.string.usb_headset_volume, percent));
     }
 
     @Override

@@ -223,6 +223,7 @@
     <string name="title_microphone_device_list">Microphone input device</string>
     <string name="summary_microphone_device_list">Choose which local microphone Artemis captures. Leave this on the default option to follow your system input device.</string>
     <string name="microphone_device_default">Default system microphone</string>
+    <string name="usb_headset_volume">Headset volume %1$d%%</string>
     <string name="microphone_device_usb_headset">%1$s (USB headset)</string>
     <string name="title_microphone_preview">Microphone input preview</string>
     <string name="microphone_preview_inactive">Microphone preview inactive</string>
