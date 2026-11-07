@@ -121,14 +121,12 @@ final class UsbHidVolumeReader {
         }
         boolean handedOff = false;
         try {
-            int len = info.reportDescriptorLength;
-            if (len <= 0 || len > MAX_REPORT_DESCRIPTOR) return null;
-            byte[] buf = new byte[len];
-            int r = conn.controlTransfer(0x81, 0x06, 0x2200, info.interfaceNumber, buf, len,
-                    CONTROL_TIMEOUT_MS);
-            LimeLog.info("UsbAudio: probe HID interface " + info.interfaceNumber + ": " + r + "/" + len
-                    + (r > 0 ? " report=" + UacDescriptorParser.toHex(Arrays.copyOf(buf, r)) : ""));
-            if (r != len) return null;
+            int[] result = new int[1];
+            byte[] buf = requestReportDescriptor(conn, info, result);
+            LimeLog.info("UsbAudio: probe HID interface " + info.interfaceNumber + ": " + result[0] + "/"
+                    + info.reportDescriptorLength
+                    + (buf != null ? " report=" + UacDescriptorParser.toHex(buf) : ""));
+            if (buf == null) return null;
             HidVolumeLayout layout = HidVolumeReportParser.parse(buf);
             if (layout == null) {
                 LimeLog.info("UsbAudio: probe: HID interface " + info.interfaceNumber + " has no volume usage");
@@ -213,36 +211,50 @@ final class UsbHidVolumeReader {
     }
 
     /**
-     * GET_DESCRIPTOR(HID Report) without claiming. The standard request goes to the interface
-     * (0x81); Linux usbfs only lets that through for an interface it can claim, which a HID
-     * interface bound to the kernel driver is not, so the device-recipient form (0x80) is tried
-     * too. A reply must have exactly the advertised length, so a device that ignores wIndex
-     * cannot make one interface look like another.
+     * GET_DESCRIPTOR(HID Report) to the interface (0x81) without claiming. Linux usbfs only lets
+     * that through for an interface it can claim, which a HID interface bound to the kernel
+     * driver is not; probe() covers that case.
      */
     private static byte[] readReportDescriptor(UsbDeviceConnection conn, UsbInterface intf,
                                                HidInterfaces.Info info) {
-        int len = info.reportDescriptorLength;
-        if (len <= 0 || len > MAX_REPORT_DESCRIPTOR) return null;
-        int[] requestTypes = {0x81, 0x80};
-        for (int requestType : requestTypes) {
-            byte[] buf = new byte[len];
-            int r;
-            try {
-                r = conn.controlTransfer(requestType, 0x06, 0x2200, info.interfaceNumber, buf, len,
-                        CONTROL_TIMEOUT_MS);
-            } catch (RuntimeException e) {
-                r = -1;
-            }
-            if (requestType == 0x81 && r > 0) {
-                // usbfs may have claimed an interface that had no driver to let this through;
-                // drop that claim (a no-op otherwise) so only the volume interface stays taken.
-                releaseQuietly(conn, intf);
-            }
-            if (r == len) return buf;
-            LimeLog.info("UsbAudio: HID report descriptor of interface " + info.interfaceNumber
-                    + " via 0x" + Integer.toHexString(requestType) + ": " + r + "/" + len);
+        int[] result = new int[1];
+        byte[] d;
+        try {
+            d = requestReportDescriptor(conn, info, result);
+        } catch (RuntimeException e) {
+            d = null;
+            result[0] = -1;
         }
-        return null;
+        if (result[0] > 0) {
+            // usbfs may have claimed an interface that had no driver to let this through;
+            // drop that claim (a no-op otherwise) so only the volume interface stays taken.
+            releaseQuietly(conn, intf);
+        }
+        if (d == null) {
+            LimeLog.info("UsbAudio: HID report descriptor of interface " + info.interfaceNumber
+                    + " unclaimed: " + result[0] + "/" + info.reportDescriptorLength);
+        }
+        return d;
+    }
+
+    /**
+     * Interface-recipient GET_DESCRIPTOR(HID Report). Asks for one byte more than advertised and
+     * accepts only a reply of exactly the advertised length, so a longer descriptor (e.g. another
+     * interface's) cannot pass as this one truncated.
+     *
+     * @param result element 0 receives the transfer result
+     * @return the descriptor, or null
+     */
+    private static byte[] requestReportDescriptor(UsbDeviceConnection conn, HidInterfaces.Info info,
+                                                  int[] result) {
+        int len = info.reportDescriptorLength;
+        result[0] = -1;
+        if (len <= 0 || len > MAX_REPORT_DESCRIPTOR) return null;
+        byte[] buf = new byte[len + 1];
+        int r = conn.controlTransfer(0x81, 0x06, 0x2200, info.interfaceNumber, buf, buf.length,
+                CONTROL_TIMEOUT_MS);
+        result[0] = r;
+        return r == len ? Arrays.copyOf(buf, len) : null;
     }
 
     private static void releaseQuietly(UsbDeviceConnection conn, UsbInterface intf) {
@@ -278,7 +290,15 @@ final class UsbHidVolumeReader {
                 continue;
             }
             fastFailures = 0;
-            int step = tracker.onReport(buf, n);
+            int step;
+            try {
+                step = tracker.onReport(buf, n);
+            } catch (RuntimeException e) {
+                // Never let a malformed report kill the process. Exit like on unplug: close()
+                // releases the interface.
+                LimeLog.warning("UsbAudio: HID reader stopping, bad report: " + e);
+                break;
+            }
             if (step != 0) {
                 try {
                     sink.onVolumeStep(step);
