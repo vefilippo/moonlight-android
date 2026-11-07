@@ -62,6 +62,8 @@ public class UsbAudioRenderer implements AudioRenderer {
     private int samplesPerFrame;
     private int inChannels;
     private boolean started;
+    /** Between setup() and cleanup(). */
+    private boolean setUp;
 
     // USB path; output != null means USB is the active path
     private PlaybackOutput output;
@@ -75,11 +77,16 @@ public class UsbAudioRenderer implements AudioRenderer {
     private byte[] packBuf;
 
     private long lastStatsMs;
+    /** When the current USB output was opened; a loss sooner than STATS_INTERVAL_MS counts as a failed attempt. */
+    private long openedAtMs;
 
     // Fallback path
     private boolean fallbackSetUp;
     private long lastCheckMs;
-    /** Current USB retry delay: doubles after each failed open, reset on success or a new generation. */
+    /**
+     * Current USB retry delay: doubles after each failed open and after each loss of a USB output
+     * that lived less than STATS_INTERVAL_MS; reset by a loss after a longer life or a new generation.
+     */
     private long retryDelayMs = RECHECK_INTERVAL_MS;
     private int generation;
     /** The last tryOpenUsb got past the readiness check (a real open attempt). */
@@ -97,6 +104,7 @@ public class UsbAudioRenderer implements AudioRenderer {
         this.sampleRate = sampleRate;
         this.samplesPerFrame = samplesPerFrame;
         this.inChannels = Math.max(1, Math.min(MAX_INPUT_CHANNELS, audioConfiguration.channelCount));
+        setUp = true;
 
         if (openUsbWithBackoff()) {
             return 0;
@@ -129,7 +137,7 @@ public class UsbAudioRenderer implements AudioRenderer {
             if (playUsb(audioData)) return;
             switchToFallback();
         } else {
-            maybeSwitchToUsb();
+            maybeSwitchToUsb(false);
             if (output != null && playUsb(audioData)) return;
             if (output != null) switchToFallback();
         }
@@ -138,8 +146,22 @@ public class UsbAudioRenderer implements AudioRenderer {
         }
     }
 
+    /**
+     * Runs the fallback path's headset check without an audio frame. playDecodedAudio is the
+     * only other caller, and the host sends no audio packets while it is silent, so without this
+     * a headset that becomes ready during silence is not taken over until the game makes a
+     * sound. Call it off the main thread (an open does blocking USB control transfers) whenever
+     * headset availability changes. A changed availability generation skips the retry delay;
+     * otherwise the backoff applies. No-op outside setup()..cleanup() and while on USB.
+     */
+    public synchronized void pollUsb() {
+        if (!setUp || output != null) return;
+        maybeSwitchToUsb(true);
+    }
+
     @Override
     public synchronized void cleanup() {
+        setUp = false;
         closeOutput();
         if (fallbackSetUp) {
             fallbackSetUp = false;
@@ -151,19 +173,35 @@ public class UsbAudioRenderer implements AudioRenderer {
 
     /**
      * tryOpenUsb plus retry backoff: a real attempt that fails doubles the delay before the next
-     * one (capped); success resets it. Not-ready checks are cheap and do not back off.
+     * one (capped). Success leaves the delay alone: it is reset only once the output has stayed
+     * alive for STATS_INTERVAL_MS (see onUsbLost), so open-then-immediate-stall cannot cycle at
+     * the base interval. Not-ready checks are cheap and do not back off.
      */
     private boolean openUsbWithBackoff() {
         generation = provider.availabilityGeneration();
         if (tryOpenUsb()) {
-            retryDelayMs = RECHECK_INTERVAL_MS;
             return true;
         }
         if (openAttempted) {
-            retryDelayMs = Math.min(retryDelayMs * 2, MAX_RECHECK_INTERVAL_MS);
+            growRetryDelay();
             LimeLog.info("UsbAudio: USB playback open failed; next attempt in " + retryDelayMs + " ms");
         }
         return false;
+    }
+
+    private void growRetryDelay() {
+        retryDelayMs = Math.min(retryDelayMs * 2, MAX_RECHECK_INTERVAL_MS);
+    }
+
+    /** Backoff bookkeeping for a USB output that was just lost at time now. */
+    private void onUsbLost(long now) {
+        if (now - openedAtMs < STATS_INTERVAL_MS) {
+            growRetryDelay();
+            LimeLog.info("UsbAudio: USB playback lost " + (now - openedAtMs)
+                    + " ms after opening; next attempt in " + retryDelayMs + " ms");
+        } else {
+            retryDelayMs = RECHECK_INTERVAL_MS;
+        }
     }
 
     /** Opens and starts a USB output and sizes the buffers for it. Never throws. */
@@ -183,6 +221,7 @@ public class UsbAudioRenderer implements AudioRenderer {
             configureBuffers(cfg);
             output = out;
             lastStatsMs = clockMs.getAsLong();
+            openedAtMs = lastStatsMs;
             LimeLog.info("UsbAudio: game audio on USB headset (" + cfg.sampleRate + " Hz, "
                     + devChannels + " ch, " + (subframeBytes * 8) + " bit)");
             return true;
@@ -268,6 +307,7 @@ public class UsbAudioRenderer implements AudioRenderer {
         LimeLog.info("UsbAudio: USB headset stream lost, switching game audio to Android output");
         closeOutput();
         lastCheckMs = clockMs.getAsLong();
+        onUsbLost(lastCheckMs);
         ensureFallback();
     }
 
@@ -287,14 +327,16 @@ public class UsbAudioRenderer implements AudioRenderer {
         }
     }
 
-    private void maybeSwitchToUsb() {
+    /** @param pollNow skip the retry delay if the availability generation changed (pollUsb). */
+    private void maybeSwitchToUsb(boolean pollNow) {
         long now = clockMs.getAsLong();
-        if (provider.availabilityGeneration() != generation) {
+        boolean newGeneration = provider.availabilityGeneration() != generation;
+        if (newGeneration) {
             // Attach, detach or a readiness flip: the next attempt may succeed, stop backing off
             generation = provider.availabilityGeneration();
             retryDelayMs = RECHECK_INTERVAL_MS;
         }
-        if (now - lastCheckMs < retryDelayMs) return;
+        if (!(pollNow && newGeneration) && now - lastCheckMs < retryDelayMs) return;
         lastCheckMs = now;
         if (openUsbWithBackoff()) {
             if (fallbackSetUp) {

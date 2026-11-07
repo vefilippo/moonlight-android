@@ -181,6 +181,7 @@ public class UsbAudioRendererTest {
         renderer.playDecodedAudio(new short[480]);
         assertEquals(1, fallback.setupCalls);
 
+        provider.generation++; // detach and re-attach bump the availability generation
         now += 600;
         renderer.playDecodedAudio(new short[480]);
         assertEquals(2, provider.outputs);
@@ -308,7 +309,7 @@ public class UsbAudioRendererTest {
     }
 
     @Test
-    public void successResetsBackoff() {
+    public void successResetsBackoffOnceUsbStayedAliveForAStatsInterval() {
         provider.ready = true;
         provider.startResult = false;
         renderer.setup(STEREO, 48000, 240);
@@ -316,10 +317,106 @@ public class UsbAudioRendererTest {
         playAfter(1000); // -> next in 2 s
         provider.startResult = true;
         assertEquals(3, playAfter(2000)); // succeeds
+        playAfter(UsbAudioRenderer.STATS_INTERVAL_MS); // alive for 10 s
         provider.output.writeResult = -5; // stream lost -> fallback
         playAfter(0);
         provider.startResult = false;
-        assertEquals(4, playAfter(500)); // back at 500 ms after the success
+        assertEquals(4, playAfter(500)); // back at 500 ms
+    }
+
+    @Test
+    public void lossSoonAfterOpeningCountsAsFailedAttempt() {
+        provider.ready = true;
+        renderer.setup(STEREO, 48000, 240); // opens
+        renderer.start();
+        assertEquals(1, provider.outputs);
+
+        // Each open stalls right away: the retry delay must keep doubling, not cycle at 500 ms
+        long[] delays = {1000, 2000, 4000};
+        for (int i = 0; i < delays.length; i++) {
+            provider.output.alive = false;
+            playAfter(5000); // lost < 10 s after opening
+            assertEquals(i + 1, playAfter(delays[i] - 1));
+            assertEquals(i + 2, playAfter(1));
+        }
+        assertEquals(0, provider.generation);
+    }
+
+    @Test
+    public void lossAfterStatsIntervalRetriesAtBaseInterval() {
+        provider.ready = true;
+        renderer.setup(STEREO, 48000, 240);
+        renderer.start();
+        playAfter(UsbAudioRenderer.STATS_INTERVAL_MS);
+        provider.output.alive = false;
+        playAfter(0);
+        assertEquals(1, playAfter(499));
+        assertEquals(2, playAfter(1));
+    }
+
+    /**
+     * The host sends no audio packets while it is silent, so playDecodedAudio is not called.
+     * A headset that becomes ready then must still be taken over without waiting for audio.
+     */
+    @Test
+    public void availabilityPollTakesOverWithoutAudioFrames() {
+        provider.ready = false;
+        renderer.setup(STEREO, 48000, 240);
+        renderer.start();
+        renderer.playDecodedAudio(new short[480]);
+        assertEquals(1, fallback.plays);
+
+        // Permission granted 100 ms later; no audio frame follows
+        provider.ready = true;
+        provider.generation++;
+        now += 100;
+        renderer.pollUsb();
+
+        assertEquals(1, provider.outputs);
+        assertTrue(provider.output.started);
+        assertEquals(1, fallback.stopCalls);
+        assertEquals(1, fallback.cleanupCalls);
+
+        renderer.playDecodedAudio(new short[480]);
+        assertEquals(960, provider.output.bytes.size());
+        assertEquals(1, fallback.plays);
+    }
+
+    @Test
+    public void availabilityPollWithoutNewGenerationKeepsBackoff() {
+        provider.ready = true;
+        provider.startResult = false;
+        renderer.setup(STEREO, 48000, 240); // attempt 1 fails -> next in 1 s
+        renderer.start();
+        now += 500;
+        renderer.pollUsb();
+        assertEquals(1, provider.outputs);
+        now += 500;
+        renderer.pollUsb();
+        assertEquals(2, provider.outputs);
+    }
+
+    @Test
+    public void availabilityPollIsIgnoredOutsideSetupAndOnUsb() {
+        provider.ready = true;
+        provider.generation++;
+        renderer.pollUsb(); // before setup
+        assertEquals(0, provider.outputs);
+
+        renderer.setup(STEREO, 48000, 240);
+        renderer.start();
+        provider.generation++;
+        renderer.pollUsb(); // already on USB
+        assertEquals(1, provider.outputs);
+
+        renderer.stop();
+        renderer.cleanup();
+        provider.generation++;
+        now += 1000;
+        renderer.pollUsb(); // after cleanup: must not reopen (nothing would close it)
+        assertEquals(1, provider.outputs);
+        assertEquals(1, provider.output.closeCalls);
+        assertEquals(0, fallback.setupCalls);
     }
 
     @Test

@@ -258,6 +258,27 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         stopMicrophoneCapture();
         startMicrophoneCapture(false); // no toasts for background restarts
     };
+    /** Game-audio renderer of the current stream, or null before the connection starts. */
+    private volatile UsbAudioRenderer usbAudioRenderer;
+    /** Runs UsbAudioRenderer.pollUsb off the main thread: it may open the headset. */
+    private final ExecutorService usbAudioPollExecutor =
+            Executors.newSingleThreadExecutor(r -> new Thread(r, "UsbAudioPoll"));
+    /**
+     * Moves game audio to the headset as soon as it becomes usable (main thread). The renderer
+     * otherwise only checks when it gets an audio frame, and the host sends none while silent.
+     */
+    private final UsbAudioManager.Listener usbAudioRendererListener = available -> {
+        UsbAudioRenderer renderer = usbAudioRenderer;
+        if (!available || renderer == null) {
+            return;
+        }
+        try {
+            usbAudioPollExecutor.execute(renderer::pollUsb);
+        }
+        catch (RejectedExecutionException e) {
+            // Activity destroyed
+        }
+    };
 
     private WifiManager.WifiLock highPerfWifiLock;
     private WifiManager.WifiLock lowLatencyWifiLock;
@@ -380,6 +401,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         prefConfig = PreferenceConfiguration.readPreferences(this);
         tombstonePrefs = Game.this.getSharedPreferences("DecoderTombstone", 0);
         UsbAudioManager.getInstance(this).addListener(usbHeadsetMicListener);
+        UsbAudioManager.getInstance(this).addListener(usbAudioRendererListener);
 
         if (prefConfig.fullScreen) {
             // Full-screen
@@ -907,10 +929,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 usbAudio.requestAccessIfNeeded();
 
                 // Starten Sie die NvConnection
-                conn.start(new UsbAudioRenderer(usbAudio,
-                                new AndroidAudioRenderer(Game.this, prefConfig.playHostAudio),
-                                SystemClock::elapsedRealtime),
-                        decoderRenderer, Game.this);
+                usbAudioRenderer = new UsbAudioRenderer(usbAudio,
+                        new AndroidAudioRenderer(Game.this, prefConfig.playHostAudio),
+                        SystemClock::elapsedRealtime);
+                conn.start(usbAudioRenderer, decoderRenderer, Game.this);
             }
         });
 
@@ -1737,6 +1759,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     @Override
     protected void onDestroy() {
         UsbAudioManager.getInstance(this).removeListener(usbHeadsetMicListener);
+        UsbAudioManager.getInstance(this).removeListener(usbAudioRendererListener);
+        usbAudioPollExecutor.shutdown();
         stopMicrophoneCapture();
         // Queued tasks (ending with the stop above) still run; later submissions are rejected.
         microphoneExecutor.shutdown();
