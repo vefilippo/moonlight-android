@@ -775,6 +775,17 @@ public class StreamSettings extends AppCompatActivity {
                 });
             }
 
+            _pref = findPreference("phone_keyboard_paired_phones");
+            if (_pref != null) {
+                _pref.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {
+                    @Override
+                    public boolean onPreferenceClick(Preference preference) {
+                        com.limelight.phonekeyboard.PairedPhonesDialog.show(getActivity());
+                        return true;
+                    }
+                });
+            }
+
             _pref = findPreference("import_special_button_file");
             if (_pref != null) {
                 _pref.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {

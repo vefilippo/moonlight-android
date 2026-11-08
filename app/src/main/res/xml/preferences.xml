@@ -253,6 +253,11 @@
             android:key="microphone_preview"
             android:title="@string/title_microphone_preview"
             app:iconSpaceReserved="false" />
+        <Preference
+            android:key="phone_keyboard_paired_phones"
+            android:summary="@string/summary_phone_keyboard_paired_phones"
+            android:title="@string/title_phone_keyboard_paired_phones"
+            app:iconSpaceReserved="false" />
     </PreferenceCategory>
 
     <PreferenceCategory

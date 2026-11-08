@@ -269,6 +269,12 @@ public class GameMenu implements Game.GameMenuCallbacks {
             showSpecialKeysMenu();
         }));
 
+        // UI navigation action as well: show the pairing dialog once the menu is gone.
+        options.add(new MenuOption(getString(R.string.game_menu_phone_keyboard), () -> {
+            hideMenu();
+            com.limelight.phonekeyboard.PairPhoneDialog.show(game);
+        }));
+
         options.add(new MenuOption(getString(R.string.game_menu_switch_touch_sensitivity_model), true, game::switchTouchSensitivity));
         if (device != null) {
             options.addAll(device.getGameMenuOptions());

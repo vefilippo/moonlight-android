@@ -764,4 +764,19 @@
 
     <string name="title_checkbox_full_screen">Enable Full Screen</string>
     <string name="summary_checkbox_full_screen">Hide system bars with immersive mode</string>
+
+    <string name="game_menu_phone_keyboard">Phone keyboard</string>
+    <string name="phone_keyboard_title">Type from your phone</string>
+    <string name="phone_keyboard_scan">Scan with your phone. Bookmark the page to reuse it.</string>
+    <string name="phone_keyboard_paired">Phone paired. You can close this.</string>
+    <string name="phone_keyboard_ip_tip">If the bookmark stops working, give the TV a fixed IP in your router or pair again.</string>
+    <string name="phone_keyboard_apollo_tip">Nothing typed? In Apollo\'s web UI, allow keyboard input for this client.</string>
+    <string name="phone_keyboard_no_network">Connect the TV to Wi-Fi or Ethernet first.</string>
+    <string name="title_phone_keyboard_paired_phones">Paired phones</string>
+    <string name="summary_phone_keyboard_paired_phones">Phones that can type on the PC through Pheme</string>
+    <string name="phone_keyboard_pair_new">Pair a new phone</string>
+    <string name="phone_keyboard_remove_confirm">Remove %1$s? Its link will stop working.</string>
+    <string name="phone_keyboard_none">No phones paired yet.</string>
+    <string name="phone_keyboard_last_used">last used %1$s</string>
+    <string name="phone_keyboard_never_used">not used yet</string>
 </resources>
