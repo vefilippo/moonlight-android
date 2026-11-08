@@ -3,6 +3,7 @@ package com.limelight;
 import android.app.Application;
 import android.widget.Toast;
 
+import com.limelight.phonekeyboard.PhoneKeyboardService;
 import com.limelight.profiles.ProfilesManager;
 
 public class ArtemisApplication extends Application {
@@ -13,5 +14,7 @@ public class ArtemisApplication extends Application {
         if (!profilesManager.load(this)) {
             Toast.makeText(this, R.string.profile_manager_failed_to_load, Toast.LENGTH_LONG).show();
         }
+        // Starts the phone keyboard server if phones are already paired (no-op otherwise).
+        PhoneKeyboardService.get(this).refresh();
     }
 }

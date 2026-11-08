@@ -3823,8 +3823,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
                 connected = true;
                 connecting = false;
-                phoneKeyboardSink = new ConnectionTypingSink(conn);
-                PhoneKeyboardHub.get().attach(phoneKeyboardSink);
+                if (conn != null && !isFinishing()) {
+                    phoneKeyboardSink = new ConnectionTypingSink(conn);
+                    PhoneKeyboardHub.get().attach(phoneKeyboardSink);
+                }
                 updatePipAutoEnter();
 
                 // Hide the mouse cursor now after a short delay.

@@ -5,7 +5,7 @@
 > - Streaming library: [vefilippo/moonlight-common-c](https://github.com/vefilippo/moonlight-common-c) — mic packets use **AES-GCM** (counter nonce, authenticated header) whenever the host offers it.
 > - Enable it in *Settings → Enable microphone streaming*. Installs as a separate app named **Pheme** — after the Greek goddess of voice, named in the same spirit as Artemis and Apollo.
 > - **USB headset driver** for devices without kernel USB audio (e.g. Chromecast with Google TV): game audio, headset mic, hardware volume and the volume wheel.
-> - **Phone keyboard**: type on the PC from your phone's browser (pair once with a QR code from the in-stream menu, then reopen the bookmarked page).
+> - **Phone keyboard**: type on the PC from your phone's browser (pair once with a QR code from the in-stream menu → Advanced Menu → Phone keyboard, then reopen the bookmarked page).
 > - APK: see [Releases](https://github.com/vefilippo/moonlight-android/releases). Each release has an `arm64-v8a` APK (phones) and an `armeabi-v7a` APK (Chromecast with Google TV and other 32-bit Android TV devices). Changes: [CHANGELOG.md](CHANGELOG.md).
 >
 > **Releasing (this fork).** Pheme uses its own semver (`VERSION`, tags `vX.Y.Z`). For a release: move `## Unreleased` in `CHANGELOG.md` to `## X.Y.Z — YYYY-MM-DD` and bump its "Next version" line; set `VERSION`, `versionName` and `versionCode` (+1) in `app/build.gradle`; run `./gradlew :app:testNonRoot_gameDebugUnitTest`; commit `release: vX.Y.Z` and tag it with `git tag -a vX.Y.Z`; build `assembleNonRoot_gameDebug` at the tag; attach `Pheme-vX.Y.Z-arm64-v8a-debug.apk` and `Pheme-vX.Y.Z-armeabi-v7a-debug.apk` to the GitHub release.
