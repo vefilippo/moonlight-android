@@ -6,18 +6,17 @@ import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.function.LongSupplier;
 
 /** One-time pairing codes that expire after {@link #TTL_MS}. */
 public final class PairingCodes {
     public static final long TTL_MS = 300_000;
-    // Plain hex (128 bits): android.util.Base64 is unavailable in plain JUnit and java.util.Base64 needs API 26.
+    // Plain hex (128 bits): android.util.Base64 is a stub in plain JUnit tests, which this class must support.
     private static final SecureRandom RANDOM = new SecureRandom();
 
-    private final LongSupplier clock;
+    private final Clock clock;
     private final Map<String, Long> expiries = new HashMap<>();
 
-    public PairingCodes(LongSupplier clock) {
+    public PairingCodes(Clock clock) {
         this.clock = clock;
     }
 
@@ -30,7 +29,7 @@ public final class PairingCodes {
             sb.append(String.format("%02x", b));
         }
         String code = sb.toString();
-        expiries.put(code, clock.getAsLong() + TTL_MS);
+        expiries.put(code, clock.nowMs() + TTL_MS);
         return code;
     }
 
@@ -64,7 +63,7 @@ public final class PairingCodes {
     }
 
     private void purgeExpired() {
-        long now = clock.getAsLong();
+        long now = clock.nowMs();
         Iterator<Long> it = expiries.values().iterator();
         while (it.hasNext()) {
             if (it.next() < now) {

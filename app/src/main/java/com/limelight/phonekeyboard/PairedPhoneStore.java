@@ -12,7 +12,6 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.function.LongSupplier;
 
 /** Persists paired phones (JSON array in SharedPreferences under "phones"). */
 public final class PairedPhoneStore {
@@ -20,15 +19,15 @@ public final class PairedPhoneStore {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final SharedPreferences prefs;
-    private final LongSupplier clock;
+    private final Clock clock;
 
-    public PairedPhoneStore(SharedPreferences prefs, LongSupplier clock) {
+    public PairedPhoneStore(SharedPreferences prefs, Clock clock) {
         this.prefs = prefs;
         this.clock = clock;
     }
 
     public synchronized PairedPhone addPhone(String label) {
-        long now = clock.getAsLong();
+        long now = clock.nowMs();
         PairedPhone phone = new PairedPhone(randomToken(9), label, randomToken(32), now, 0L);
         List<PairedPhone> phones = load();
         phones.add(phone);
@@ -56,7 +55,7 @@ public final class PairedPhoneStore {
         for (int i = 0; i < phones.size(); i++) {
             PairedPhone p = phones.get(i);
             if (p.id.equals(id)) {
-                phones.set(i, new PairedPhone(p.id, p.label, p.secret, p.createdAtMs, clock.getAsLong()));
+                phones.set(i, new PairedPhone(p.id, p.label, p.secret, p.createdAtMs, clock.nowMs()));
                 changed = true;
             }
         }
