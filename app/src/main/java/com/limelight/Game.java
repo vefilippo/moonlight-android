@@ -396,6 +396,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         super.onCreate(savedInstanceState);
 
         instance = this;
+        com.limelight.phonekeyboard.PhoneKeyboardService.get(this).refresh();
         timerHandler = new Handler(Looper.getMainLooper());
 
         UiHelper.setLocale(this);

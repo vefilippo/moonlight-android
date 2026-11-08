@@ -265,6 +265,7 @@ public class PcView extends AppCompatActivity implements AdapterFragmentCallback
             pendingPairingPin = null;
             pendingPairingPassphrase = null;
         }
+        com.limelight.phonekeyboard.PhoneKeyboardService.get(this).refresh();
     }
 
     private void completeOnCreate() {
