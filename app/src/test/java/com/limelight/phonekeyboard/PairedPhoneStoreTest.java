@@ -46,7 +46,17 @@ public class PairedPhoneStoreTest {
     }
     @Test public void markUsedUpdatesLastUsed() {
         now = 1000; PairedPhone p = store.addPhone("x");
-        now = 5000; store.markUsed(p.id);
-        assertEquals(5000, store.list().get(0).lastUsedMs);
+        now = 100_000; store.markUsed(p.id);
+        assertEquals(100_000, store.list().get(0).lastUsedMs);
+    }
+    @Test public void markUsedWritesAtMostOncePerMinute() {
+        now = 1000; PairedPhone p = store.addPhone("x");
+        now = 100_000; store.markUsed(p.id);
+        String afterFirst = prefs.getString(PairedPhoneStore.KEY, null);
+        now = 100_000 + 60_000; store.markUsed(p.id); // exactly 60 s later: still throttled
+        assertEquals(afterFirst, prefs.getString(PairedPhoneStore.KEY, null));
+        assertEquals(100_000, store.list().get(0).lastUsedMs);
+        now = 100_000 + 60_001; store.markUsed(p.id);
+        assertEquals(160_001, store.list().get(0).lastUsedMs);
     }
 }

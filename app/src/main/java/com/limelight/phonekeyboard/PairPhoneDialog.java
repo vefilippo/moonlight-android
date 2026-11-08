@@ -48,7 +48,9 @@ public final class PairPhoneDialog {
         final TextView status;
         if (url == null) {
             qrView = null;
-            status = addText(activity, content, activity.getString(R.string.phone_keyboard_no_network), 18);
+            int msg = service.lastStartFailed() ? R.string.phone_keyboard_server_failed
+                    : R.string.phone_keyboard_no_network;
+            status = addText(activity, content, activity.getString(msg), 18);
         } else {
             DisplayMetrics dm = activity.getResources().getDisplayMetrics();
             // About 60% of the dialog width, but never taller than about half the screen.

@@ -16,6 +16,7 @@ import java.util.List;
 /** Persists paired phones (JSON array in SharedPreferences under "phones"). */
 public final class PairedPhoneStore {
     static final String KEY = "phones";
+    static final long LAST_USED_WRITE_INTERVAL_MS = 60_000;
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final SharedPreferences prefs;
@@ -50,12 +51,14 @@ public final class PairedPhoneStore {
     }
 
     public synchronized void markUsed(String id) {
+        long now = clock.nowMs();
         List<PairedPhone> phones = load();
         boolean changed = false;
         for (int i = 0; i < phones.size(); i++) {
             PairedPhone p = phones.get(i);
-            if (p.id.equals(id)) {
-                phones.set(i, new PairedPhone(p.id, p.label, p.secret, p.createdAtMs, clock.nowMs()));
+            // Persisting on every keystroke request is wasteful; once a minute is plenty.
+            if (p.id.equals(id) && now - p.lastUsedMs > LAST_USED_WRITE_INTERVAL_MS) {
+                phones.set(i, new PairedPhone(p.id, p.label, p.secret, p.createdAtMs, now));
                 changed = true;
             }
         }

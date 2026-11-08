@@ -298,6 +298,7 @@
     <string name="phone_keyboard_ip_tip">Se il preferito smette di funzionare, assegna un IP fisso alla TV nel router oppure associa di nuovo il telefono.</string>
     <string name="phone_keyboard_apollo_tip">Non scrive niente? Nell\'interfaccia web di Apollo, consenti l\'input da tastiera per questo client.</string>
     <string name="phone_keyboard_no_network">Collega prima la TV al Wi-Fi o all\'Ethernet.</string>
+    <string name="phone_keyboard_server_failed">Impossibile avviare la tastiera del telefono. Riavvia Pheme e riprova.</string>
     <string name="title_phone_keyboard_paired_phones">Telefoni associati</string>
     <string name="summary_phone_keyboard_paired_phones">Telefoni che possono scrivere sul PC tramite Pheme</string>
     <string name="phone_keyboard_pair_new">Associa un nuovo telefono</string>

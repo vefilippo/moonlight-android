@@ -772,6 +772,7 @@
     <string name="phone_keyboard_ip_tip">If the bookmark stops working, give the TV a fixed IP in your router or pair again.</string>
     <string name="phone_keyboard_apollo_tip">Nothing typed? In Apollo\'s web UI, allow keyboard input for this client.</string>
     <string name="phone_keyboard_no_network">Connect the TV to Wi-Fi or Ethernet first.</string>
+    <string name="phone_keyboard_server_failed">Couldn\'t start the phone keyboard. Restart Pheme and try again.</string>
     <string name="title_phone_keyboard_paired_phones">Paired phones</string>
     <string name="summary_phone_keyboard_paired_phones">Phones that can type on the PC through Pheme</string>
     <string name="phone_keyboard_pair_new">Pair a new phone</string>

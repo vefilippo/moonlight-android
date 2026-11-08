@@ -1,6 +1,7 @@
 package com.limelight.phonekeyboard;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import androidx.test.core.app.ApplicationProvider;
@@ -44,5 +45,14 @@ public class PhoneKeyboardServiceTest {
         service.store().addPhone("x");
         service.refresh();
         assertTrue(service.isRunning());
+    }
+    @Test public void startPairingReturnsNullAndFlagsFailureWhenThePortIsTaken() throws Exception {
+        try (java.net.ServerSocket blocker = new java.net.ServerSocket()) {
+            blocker.setReuseAddress(false);
+            blocker.bind(new java.net.InetSocketAddress(PhoneKeyboardServer.PORT));
+            assertNull(service.startPairing());
+            assertTrue(service.lastStartFailed());
+            assertFalse(service.isRunning());
+        }
     }
 }

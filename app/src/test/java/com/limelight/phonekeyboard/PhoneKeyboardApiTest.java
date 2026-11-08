@@ -122,9 +122,9 @@ public class PhoneKeyboardApiTest {
     }
     @Test public void successfulTypingMarksUsed() {
         hub.attach(sink);
-        now = 5000;
+        now = 100_000;
         api.handle("POST", "/api/text", key(phone), json("a"));
-        assertEquals(5000, store.list().get(0).lastUsedMs);
+        assertEquals(100_000, store.list().get(0).lastUsedMs);
     }
     @Test public void textWithoutStreamIs409() {
         ApiResponse r = api.handle("POST", "/api/text", key(phone), "{\"text\":\"a\"}");

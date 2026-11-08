@@ -35,6 +35,7 @@ public final class PhoneKeyboardService {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile Runnable onPairedListener;
     private PhoneKeyboardServer server;
+    private volatile boolean lastStartFailed;
 
     public static synchronized PhoneKeyboardService get(Context context) {
         if (instance == null) {
@@ -87,12 +88,31 @@ public final class PhoneKeyboardService {
         }
     }
 
-    /** Returns the pairing URL, or null when no LAN IPv4 is available (the server still starts). */
+    /**
+     * Returns the pairing URL, or null when pairing can't start. Distinguish the two causes with
+     * {@link #lastStartFailed()}: server did not start, or else no LAN IPv4 is available.
+     */
     public String startPairing() {
         String code = codes.issue();
         refresh();
+        if (!isRunning()) {
+            lastStartFailed = true;
+            codes.cancelAll();
+            refresh();
+            return null;
+        }
+        lastStartFailed = false;
         String ip = findLanIpv4(context);
         return ip == null ? null : "http://" + ip + ":" + PhoneKeyboardServer.PORT + "/pair/" + code;
+    }
+
+    /** True when the last {@link #startPairing()} returned null because the server did not start. */
+    public boolean lastStartFailed() {
+        return lastStartFailed;
+    }
+
+    PairingCodes codes() {
+        return codes;
     }
 
     public void endPairing() {
