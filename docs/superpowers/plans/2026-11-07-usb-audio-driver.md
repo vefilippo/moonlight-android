@@ -39,7 +39,6 @@
   - adb: `$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe`. Chromecast at `192.168.178.35`; the wireless-debugging port changes every session, so ask the user for it.
 - Python is not installed. Use the Edit tool, not scripts.
 - Log tag for everything new: `UsbAudio`, via `LimeLog`.
-- Commit trailer: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ## Review Focus
 
