@@ -1,6 +1,6 @@
 # Pheme (Artemis Android fork)
 
-> **About this fork** — personal build of [ClassicOldSong/moonlight-android](https://github.com/ClassicOldSong/moonlight-android) (Artemis) with **microphone streaming** (upstream PR #537) to an [Apollo host with mic passthrough](https://github.com/vefilippo/Apollo).
+> **About this fork** — personal build of [ClassicOldSong/moonlight-android](https://github.com/ClassicOldSong/moonlight-android) (Artemis) with **microphone streaming** (upstream PR #537) to an [Apollo host with mic passthrough](https://github.com/vefilippo/Apollo): use [vefilippo/Apollo v0.4.6-mic.1](https://github.com/vefilippo/Apollo/releases/tag/v0.4.6-mic.1) or later (Windows, AES-GCM mic packets). Upstream Apollo has no mic passthrough.
 >
 > - Streaming library: [vefilippo/moonlight-common-c](https://github.com/vefilippo/moonlight-common-c) — mic packets use **AES-GCM** (counter nonce, authenticated header) whenever the host offers it.
 > - Enable it in *Settings → Enable microphone streaming*. Installs as a separate app named **Pheme** — after the Greek goddess of voice, named in the same spirit as Artemis and Apollo.
