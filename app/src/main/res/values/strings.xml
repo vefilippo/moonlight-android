@@ -385,7 +385,7 @@
     <string name="pacing_smoothness">Prefer smoothest video (may significantly increase latency)</string>
 
 
-    <string name="keyboard_service_label">Artemis Physical keyboard</string>
+    <string name="keyboard_service_label">Pheme Physical keyboard</string>
     <string name="accessibility_description_text">Only used when physical keyboard shortcut were intercepted by system. In some systems, several keyboard shortcut are defind and used by the Android system, causing them not being able to be passed through to the host PC. Artemis will not look through your input, nor collecting your password, credit card number or any other private information.</string>
 
 

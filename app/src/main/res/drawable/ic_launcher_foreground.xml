@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pheme launcher foreground: Artemis wheel with radiating voice rings. Generated. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M56.656,52.9 L74.971,52.9 A21,21 0 0,0 69.607,39.949 Z M55.1,51.344 L68.051,38.393 A21,21 0 0,0 55.1,33.029 Z M52.9,51.344 L52.9,33.029 A21,21 0 0,0 39.949,38.393 Z M51.344,52.9 L38.393,39.949 A21,21 0 0,0 33.029,52.9 Z M51.344,55.1 L33.029,55.1 A21,21 0 0,0 38.393,68.051 Z M52.9,56.656 L39.949,69.607 A21,21 0 0,0 52.9,74.971 Z M55.1,56.656 L55.1,74.971 A21,21 0 0,0 68.051,69.607 Z M56.656,55.1 L69.607,68.051 A21,21 0 0,0 74.971,55.1 Z" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeAlpha="0.55"
+        android:strokeWidth="1.6"
+        android:pathData="M27,54 A27,27 0 1,1 81,54 A27,27 0 1,1 27,54 Z" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeAlpha="0.28"
+        android:strokeWidth="1.4"
+        android:pathData="M22,54 A32,32 0 1,1 86,54 A32,32 0 1,1 22,54 Z" />
+</vector>
