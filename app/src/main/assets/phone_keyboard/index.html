@@ -58,7 +58,6 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
   font-size: 17px; cursor: pointer;
 }
 #keys button:active { background: var(--line); }
-#keys .wide { grid-column: span 2; }
 #msg { min-height: 1.4em; font-size: 14px; color: var(--muted); margin: 0; }
 #msg.bad { color: var(--bad); }
 .help { font-size: 13px; color: var(--muted); margin: 0; }
@@ -80,7 +79,7 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
   </form>
 
   <div id="keys" aria-label="Special keys">
-    <button type="button" data-key="enter" class="wide">Enter</button>
+    <button type="button" data-key="enter">Enter</button>
     <button type="button" data-key="backspace" aria-label="Backspace">&#9003;</button>
     <button type="button" data-key="tab">Tab</button>
     <button type="button" data-key="esc">Esc</button>
@@ -101,13 +100,16 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
   var $ = function (id) { return document.getElementById(id); };
   var input = $('text'), pw = $('pw'), send = $('send'), statusEl = $('status'), msg = $('msg');
   var MAX = 4000, POLL_MS = 2000;
-  var unpaired = false, timer = null, busy = false;
+  var unpaired = false, timer = null, busy = false, polling = false;
+  var queue = Promise.resolve();  // POSTs (text and keys) run strictly one after another
+  var STATUS_TIMEOUT_MS = 3000, POST_TIMEOUT_MS = 8000;
   var KEYS = ['enter', 'backspace', 'tab', 'esc', 'left', 'up', 'down', 'right'];
 
   var TEXT = {
     ready: 'Connected',
     waiting: 'Waiting for a stream…',
     unreachable: "Can't reach Pheme on the TV",
+    timedOut: "No answer from Pheme on the TV. What you sent may not have arrived.",
     unpaired: "This phone isn't paired anymore. Pair it again from Pheme on the TV."
   };
 
@@ -122,19 +124,34 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
   }
 
   // Resolves to {status: <http status>, body: <parsed JSON or null>}; rejects only on network failure.
+  // Rejects on network failure or timeout (err.name === 'AbortError' for a timeout).
   function api(method, path, payload) {
+    var ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    var ms = method === 'GET' ? STATUS_TIMEOUT_MS : POST_TIMEOUT_MS;
     var opts = { method: method, cache: 'no-store', headers: { 'X-Pheme-Key': secret } };
+    if (ctl) opts.signal = ctl.signal;
     if (payload !== undefined) {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(payload);
     }
+    var tid = ctl ? setTimeout(function () { ctl.abort(); }, ms) : null;
+    function done() { if (tid) clearTimeout(tid); }
     return fetch(path, opts).then(function (r) {
       return r.text().then(function (t) {
+        done();
         var body = null;
         try { body = JSON.parse(t); } catch (e) { body = null; }
         return { status: r.status, body: body };
-      }, function () { return { status: r.status, body: null }; });
-    });
+      }, function () { done(); return { status: r.status, body: null }; });
+    }, function (e) { done(); throw e; });
+  }
+
+  // Serialises POSTs so "send text, then Enter" always reaches the PC in that order.
+  function enqueue(path, payload) {
+    var run = function () { return api('POST', path, payload); };
+    var p = queue.then(run, run);
+    queue = p.then(function () {}, function () {});
+    return p;
   }
 
   function handleResult(res, onOk) {
@@ -144,11 +161,16 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
     if (res.status === 413) { setMsg('Too long. Send at most ' + MAX + ' characters at a time.', true); return; }
     setMsg('Pheme did not accept that (' + res.status + ').', true);
   }
-  function handleFailure() { setStatus('error', TEXT.unreachable); setMsg(TEXT.unreachable, true); }
+  function handleFailure(err) {
+    setStatus('error', TEXT.unreachable);
+    setMsg(err && err.name === 'AbortError' ? TEXT.timedOut : TEXT.unreachable, true);
+  }
 
   function poll() {
-    if (unpaired) return;
+    if (unpaired || polling) return;
+    polling = true;
     api('GET', '/api/status').then(function (res) {
+      polling = false;
       if (unpaired) return;
       if (res.status === 401) { showUnpaired(); return; }
       var state = res.status === 200 && res.body ? res.body.state : null;
@@ -160,7 +182,7 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
       } else {
         setStatus('error', TEXT.unreachable);
       }
-    }).catch(function () { if (!unpaired) setStatus('error', TEXT.unreachable); });
+    }).catch(function () { polling = false; if (!unpaired) setStatus('error', TEXT.unreachable); });
   }
   function startPolling() {
     stopPolling();
@@ -179,7 +201,7 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
     if (!text || busy || unpaired) return;
     if (text.length > MAX) { setMsg('Too long. Send at most ' + MAX + ' characters at a time.', true); return; }
     busy = true; send.disabled = true;
-    api('POST', '/api/text', { text: text }).then(function (res) {
+    enqueue('/api/text', { text: text }).then(function (res) {
       handleResult(res, function () { if (input.value === text) input.value = ''; });
     }).catch(handleFailure).then(function () {
       busy = false; send.disabled = false; input.focus();
@@ -194,14 +216,14 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
     if (!b || unpaired) return;
     var key = b.getAttribute('data-key');
     if (KEYS.indexOf(key) < 0) return;
-    api('POST', '/api/key', { key: key }).then(function (res) { handleResult(res); }).catch(handleFailure);
+    enqueue('/api/key', { key: key }).then(function (res) { handleResult(res); }).catch(handleFailure);
   });
 
   // Password mode: only flips the input type/attributes; the text stays in the field, nowhere else.
   function applyPw(on) {
     input.type = on ? 'password' : 'text';
     input.setAttribute('autocapitalize', on ? 'off' : 'sentences');
-    input.setAttribute('autocomplete', on ? 'new-password' : 'off');
+    input.setAttribute('autocomplete', 'off');
     input.setAttribute('autocorrect', 'off');
   }
   try { pw.checked = localStorage.getItem('pheme-pw') === '1'; } catch (e) { /* storage unavailable */ }
