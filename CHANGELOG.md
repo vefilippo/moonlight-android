@@ -8,6 +8,14 @@ with microphone streaming and a USB headset driver. Versions follow
 
 Next version: 1.1.0
 
+### Added
+
+- **Phone keyboard** — type on the streamed PC from a phone's browser, no app to install. Pair
+  once by scanning a QR code from the in-stream menu ("Phone keyboard"), then reopen the
+  bookmarked page whenever a stream runs. Password mode, Enter, Backspace, Tab, Esc and the
+  arrow keys are supported. Manage or remove phones in *Settings → Paired phones*. Phone and
+  TV must be on the same network.
+
 ## 1.0.0 — 2026-11-08
 
 First release under the name **Pheme**, based on Artemis Android 20.2.6. It follows
