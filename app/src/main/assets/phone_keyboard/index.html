@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Pheme keyboard</title>
+<style>
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --fg: #15171a; --muted: #5d6570;
+  --line: #d5d9df; --accent: #3b5bdb; --accent-fg: #ffffff;
+  --key: #e8ebf0; --ok: #1f8a4c; --warn: #b26a00; --bad: #c92a2a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101216; --card: #1a1d23; --fg: #eceef1; --muted: #98a1ad;
+    --line: #2d323b; --accent: #7c93f5; --accent-fg: #0d1020;
+    --key: #272b33; --ok: #4cc47f; --warn: #e6a23c; --bad: #ff7b7b;
+  }
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--fg);
+  font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+  padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+           calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+}
+main { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+h1 { font-size: 20px; margin: 0; letter-spacing: .01em; }
+#status { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); text-align: right; }
+#status::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+#status[data-state="ready"]::before { background: var(--ok); }
+#status[data-state="waiting"]::before { background: var(--warn); }
+#status[data-state="error"]::before { background: var(--bad); }
+form { display: flex; flex-direction: column; gap: 12px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+input[type="text"], input[type="password"] {
+  width: 100%; min-height: 56px; padding: 0 14px; font-size: 18px; /* >=16px stops iOS zoom */
+  color: var(--fg); background: var(--bg); border: 2px solid var(--line); border-radius: 12px;
+  outline: none; font-family: inherit;
+}
+input:focus { border-color: var(--accent); }
+button { font: inherit; color: var(--fg); touch-action: manipulation; }
+#send {
+  min-height: 56px; border: 0; border-radius: 12px; font-size: 18px; font-weight: 600;
+  background: var(--accent); color: var(--accent-fg); cursor: pointer;
+}
+#send:active { filter: brightness(.9); }
+#send:disabled { opacity: .55; }
+.toggle { display: flex; align-items: center; gap: 12px; min-height: 44px; color: var(--muted); font-size: 15px; }
+.toggle input { width: 24px; height: 24px; margin: 0; accent-color: var(--accent); }
+#keys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+#keys button {
+  min-height: 52px; border: 1px solid var(--line); border-radius: 12px; background: var(--key);
+  font-size: 17px; cursor: pointer;
+}
+#keys button:active { background: var(--line); }
+#keys .wide { grid-column: span 2; }
+#msg { min-height: 1.4em; font-size: 14px; color: var(--muted); margin: 0; }
+#msg.bad { color: var(--bad); }
+.help { font-size: 13px; color: var(--muted); margin: 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Pheme keyboard</h1>
+    <span id="status" data-state="unknown" role="status" aria-live="polite">Connecting&hellip;</span>
+  </header>
+
+  <form id="form" autocomplete="off">
+    <input id="text" type="text" name="pheme-text" maxlength="4000" placeholder="Type here"
+           autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false"
+           enterkeyhint="send" aria-label="Text to send">
+    <label class="toggle"><input id="pw" type="checkbox"> Password mode (hide what I type)</label>
+    <button id="send" type="submit">Send</button>
+  </form>
+
+  <div id="keys" aria-label="Special keys">
+    <button type="button" data-key="enter" class="wide">Enter</button>
+    <button type="button" data-key="backspace" aria-label="Backspace">&#9003;</button>
+    <button type="button" data-key="tab">Tab</button>
+    <button type="button" data-key="esc">Esc</button>
+    <button type="button" data-key="left" aria-label="Left">&larr;</button>
+    <button type="button" data-key="up" aria-label="Up">&uarr;</button>
+    <button type="button" data-key="down" aria-label="Down">&darr;</button>
+    <button type="button" data-key="right" aria-label="Right">&rarr;</button>
+  </div>
+
+  <p id="msg" aria-live="polite"></p>
+  <p class="help">Nothing typed? In Apollo's web UI, allow keyboard input for this client.</p>
+</main>
+
+<script>
+(function () {
+  'use strict';
+  var secret = (location.pathname.split('/').filter(Boolean).pop()) || '';
+  var $ = function (id) { return document.getElementById(id); };
+  var input = $('text'), pw = $('pw'), send = $('send'), statusEl = $('status'), msg = $('msg');
+  var MAX = 4000, POLL_MS = 2000;
+  var unpaired = false, timer = null, busy = false;
+  var KEYS = ['enter', 'backspace', 'tab', 'esc', 'left', 'up', 'down', 'right'];
+
+  var TEXT = {
+    ready: 'Connected',
+    waiting: 'Waiting for a stream…',
+    unreachable: "Can't reach Pheme on the TV",
+    unpaired: "This phone isn't paired anymore. Pair it again from Pheme on the TV."
+  };
+
+  function setStatus(state, text) { statusEl.setAttribute('data-state', state); statusEl.textContent = text; }
+  function setMsg(text, bad) { msg.textContent = text || ''; msg.className = bad ? 'bad' : ''; }
+
+  function showUnpaired() {
+    unpaired = true;
+    stopPolling();
+    setStatus('error', 'Not paired');
+    setMsg(TEXT.unpaired, true);
+  }
+
+  // Resolves to {status: <http status>, body: <parsed JSON or null>}; rejects only on network failure.
+  function api(method, path, payload) {
+    var opts = { method: method, cache: 'no-store', headers: { 'X-Pheme-Key': secret } };
+    if (payload !== undefined) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(payload);
+    }
+    return fetch(path, opts).then(function (r) {
+      return r.text().then(function (t) {
+        var body = null;
+        try { body = JSON.parse(t); } catch (e) { body = null; }
+        return { status: r.status, body: body };
+      }, function () { return { status: r.status, body: null }; });
+    });
+  }
+
+  function handleResult(res, onOk) {
+    if (res.status === 401) { showUnpaired(); return; }
+    if (res.status === 200) { setStatus('ready', TEXT.ready); setMsg(''); if (onOk) onOk(); return; }
+    if (res.status === 409) { setStatus('waiting', TEXT.waiting); setMsg(TEXT.waiting); return; }
+    if (res.status === 413) { setMsg('Too long. Send at most ' + MAX + ' characters at a time.', true); return; }
+    setMsg('Pheme did not accept that (' + res.status + ').', true);
+  }
+  function handleFailure() { setStatus('error', TEXT.unreachable); setMsg(TEXT.unreachable, true); }
+
+  function poll() {
+    if (unpaired) return;
+    api('GET', '/api/status').then(function (res) {
+      if (unpaired) return;
+      if (res.status === 401) { showUnpaired(); return; }
+      var state = res.status === 200 && res.body ? res.body.state : null;
+      if (state === 'ready') {
+        setStatus('ready', TEXT.ready);
+        if (msg.textContent === TEXT.unreachable || msg.textContent === TEXT.waiting) setMsg('');
+      } else if (state === 'waiting') {
+        setStatus('waiting', TEXT.waiting);
+      } else {
+        setStatus('error', TEXT.unreachable);
+      }
+    }).catch(function () { if (!unpaired) setStatus('error', TEXT.unreachable); });
+  }
+  function startPolling() {
+    stopPolling();
+    if (unpaired || document.hidden) return;
+    poll();
+    timer = setInterval(poll, POLL_MS);
+  }
+  function stopPolling() { if (timer) { clearInterval(timer); timer = null; } }
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) stopPolling(); else startPolling();
+  });
+
+  $('form').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var text = input.value;
+    if (!text || busy || unpaired) return;
+    if (text.length > MAX) { setMsg('Too long. Send at most ' + MAX + ' characters at a time.', true); return; }
+    busy = true; send.disabled = true;
+    api('POST', '/api/text', { text: text }).then(function (res) {
+      handleResult(res, function () { if (input.value === text) input.value = ''; });
+    }).catch(handleFailure).then(function () {
+      busy = false; send.disabled = false; input.focus();
+    });
+  });
+
+  // Keys: keep keyboard focus in the text box so the phone keyboard doesn't close.
+  var keysEl = $('keys');
+  keysEl.addEventListener('mousedown', function (e) { e.preventDefault(); });
+  keysEl.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('button[data-key]') : null;
+    if (!b || unpaired) return;
+    var key = b.getAttribute('data-key');
+    if (KEYS.indexOf(key) < 0) return;
+    api('POST', '/api/key', { key: key }).then(function (res) { handleResult(res); }).catch(handleFailure);
+  });
+
+  // Password mode: only flips the input type/attributes; the text stays in the field, nowhere else.
+  function applyPw(on) {
+    input.type = on ? 'password' : 'text';
+    input.setAttribute('autocapitalize', on ? 'off' : 'sentences');
+    input.setAttribute('autocomplete', on ? 'new-password' : 'off');
+    input.setAttribute('autocorrect', 'off');
+  }
+  try { pw.checked = localStorage.getItem('pheme-pw') === '1'; } catch (e) { /* storage unavailable */ }
+  applyPw(pw.checked);
+  pw.addEventListener('change', function () {
+    applyPw(pw.checked);
+    try { localStorage.setItem('pheme-pw', pw.checked ? '1' : '0'); } catch (e) { /* ignore */ }
+    input.focus();
+  });
+
+  startPolling();
+})();
+</script>
+</body>
+</html>
