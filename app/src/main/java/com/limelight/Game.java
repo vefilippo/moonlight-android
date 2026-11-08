@@ -9,6 +9,8 @@ import static com.limelight.utils.ServerHelper.getActiveDisplay;
 import static com.limelight.utils.ServerHelper.getSecondaryDisplay;
 
 import com.limelight.binding.PlatformBinding;
+import com.limelight.phonekeyboard.ConnectionTypingSink;
+import com.limelight.phonekeyboard.PhoneKeyboardHub;
 import com.limelight.binding.audio.AndroidAudioRenderer;
 import com.limelight.binding.audio.MicrophoneCaptureManager;
 import com.limelight.binding.audio.usb.UsbAudioManager;
@@ -192,6 +194,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     private int currentOrientation;
 
     public NvConnection conn;
+    private ConnectionTypingSink phoneKeyboardSink;
     private SpinnerDialog spinner;
     private boolean displayedFailureDialog = false;
     private boolean connecting = false;
@@ -3517,6 +3520,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         stopMicrophoneCapture();
 
         if (connecting || connected) {
+            if (phoneKeyboardSink != null) {
+                PhoneKeyboardHub.get().detach(phoneKeyboardSink);
+                phoneKeyboardSink = null;
+            }
             connecting = connected = false;
             updatePipAutoEnter();
 
@@ -3815,6 +3822,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
                 connected = true;
                 connecting = false;
+                phoneKeyboardSink = new ConnectionTypingSink(conn);
+                PhoneKeyboardHub.get().attach(phoneKeyboardSink);
                 updatePipAutoEnter();
 
                 // Hide the mouse cursor now after a short delay.
