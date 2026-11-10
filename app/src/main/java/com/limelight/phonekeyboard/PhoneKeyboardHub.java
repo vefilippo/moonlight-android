@@ -8,13 +8,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 
 /**
- * Routes typing from the phone server to whichever stream is active. All typing runs on one
+ * Routes typing and mouse input from the phone server to whichever stream is active. All typing runs on one
  * background thread, one task per call, so two sends never interleave.
  */
 public final class PhoneKeyboardHub {
     private static PhoneKeyboardHub instance;
 
     private final Executor executor;
+    private final Object mouseLock = new Object();
     private volatile TypingSink sink;
 
     public PhoneKeyboardHub(Executor executor) {
@@ -60,6 +61,8 @@ public final class PhoneKeyboardHub {
                     if (sink != captured) return; // stream ended or changed: drop the rest
                     if (a.kind() == TypingAction.Kind.KEY) {
                         captured.sendKey(a.vk(), a.shift());
+                    } else if (a.kind() == TypingAction.Kind.COMBO) {
+                        captured.sendCombo(a.modifiers(), a.vk());
                     } else {
                         captured.sendText(a.text());
                     }
@@ -71,5 +74,31 @@ public final class PhoneKeyboardHub {
 
     public boolean press(SpecialKey key) {
         return type(Collections.singletonList(TypingAction.key(key.vk(), false)));
+    }
+
+    /** Queues a shortcut behind any pending typing, so "text, then Win+X" keeps its order. */
+    public boolean combo(byte modifiers, short vk) {
+        return type(Collections.singletonList(TypingAction.combo(modifiers, vk)));
+    }
+
+    /**
+     * Sends mouse input right away on the caller's thread (not behind queued typing, so the pointer
+     * stays responsive). Calls are serialised so two batches never interleave.
+     */
+    public boolean mouse(List<MouseAction> actions) {
+        final TypingSink captured = sink;
+        if (captured == null) return false;
+        synchronized (mouseLock) {
+            for (MouseAction a : actions) {
+                if (sink != captured) break;
+                switch (a.kind()) {
+                    case MOVE: captured.sendMouseMove(a.dx(), a.dy()); break;
+                    case BUTTON: captured.sendMouseButton(a.button(), a.down()); break;
+                    case SCROLL: captured.sendMouseScroll(a.scroll()); break;
+                    default: break;
+                }
+            }
+        }
+        return true;
     }
 }

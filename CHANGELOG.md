@@ -13,7 +13,11 @@ Next version: 1.1.0
 - **Phone keyboard** — type on the streamed PC from a phone's browser, no app to install. Pair
   once by scanning a QR code from the in-stream menu (Advanced Menu → "Phone keyboard"), then reopen the
   bookmarked page whenever a stream runs. Password mode, Enter, Backspace, Tab, Esc and the
-  arrow keys are supported. Manage or remove phones in *Settings → Paired phones*. Phone and
+  arrow keys are supported, plus shortcuts: sticky Win/Ctrl/Alt/Shift modifiers (arm one, then tap
+  a key or type a letter, e.g. Win+X) and one-tap Start, Win+Tab, Win+D, Win+E, Alt+Tab, Alt+F4
+  and Task Manager. A Touchpad tab moves the mouse: drag to move, tap to click, two-finger tap to
+  right-click, two fingers to scroll, and hold-able Left/Middle/Right buttons for dragging.
+  Manage or remove phones in *Settings → Paired phones*. Phone and
   TV must be on the same network.
 
 ### Fixed

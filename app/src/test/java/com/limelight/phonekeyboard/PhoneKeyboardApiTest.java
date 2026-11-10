@@ -155,6 +155,54 @@ public class PhoneKeyboardApiTest {
         assertEquals(400, api.handle("POST", "/api/key", key(phone), "{\"key\":\"f13\"}").status);
         assertEquals(400, api.handle("POST", "/api/key", key(phone), "{}").status);
     }
+    @Test public void winTabComboIsSent() {
+        assertEquals(409, api.handle("POST", "/api/combo", key(phone), "{\"mods\":[\"win\"],\"key\":\"tab\"}").status);
+        hub.attach(sink);
+        assertEquals(200, api.handle("POST", "/api/combo", key(phone), "{\"mods\":[\"win\"],\"key\":\"tab\"}").status);
+        assertEquals(200, api.handle("POST", "/api/combo", key(phone), "{\"mods\":[\"win\"],\"key\":\"X\"}").status);
+        assertEquals(200, api.handle("POST", "/api/combo", key(phone), "{\"mods\":[\"ctrl\",\"shift\"],\"key\":\"esc\"}").status);
+        assertEquals(200, api.handle("POST", "/api/combo", key(phone), "{\"mods\":[\"alt\"],\"key\":\"f4\"}").status);
+        assertEquals(200, api.handle("POST", "/api/combo", key(phone), "{\"mods\":[\"win\"]}").status);
+        assertEquals(Arrays.asList("combo:8:9", "combo:8:88", "combo:3:27", "combo:4:115", "combo:8:0"),
+                sink.events);
+    }
+    @Test public void badComboIs400() {
+        hub.attach(sink);
+        String[] bodies = {"{", "{}", "{\"mods\":[]}", "{\"mods\":[\"hyper\"],\"key\":\"a\"}",
+                "{\"mods\":\"win\",\"key\":\"a\"}", "{\"mods\":[\"win\"],\"key\":\"f13\"}",
+                "{\"mods\":[\"win\"],\"key\":\"ab\"}", "{\"mods\":[\"win\"],\"key\":5}"};
+        for (String b : bodies) assertEquals(b, 400, api.handle("POST", "/api/combo", key(phone), b).status);
+        assertEquals(401, api.handle("POST", "/api/combo", noHeaders(), "{\"mods\":[\"win\"]}").status);
+        assertTrue(sink.events.isEmpty());
+    }
+    @Test public void mouseEventsAreSentInOrder() {
+        String body = "{\"events\":[{\"t\":\"move\",\"dx\":5,\"dy\":-3},{\"t\":\"down\",\"b\":\"left\"},"
+                + "{\"t\":\"up\",\"b\":\"left\"},{\"t\":\"down\",\"b\":\"right\"},{\"t\":\"scroll\",\"v\":-120}]}";
+        assertEquals(409, api.handle("POST", "/api/mouse", key(phone), body).status);
+        hub.attach(sink);
+        assertEquals(200, api.handle("POST", "/api/mouse", key(phone), body).status);
+        assertEquals(Arrays.asList("move:5:-3", "down:1", "up:1", "down:3", "scroll:-120"), sink.events);
+    }
+    @Test public void badMouseBatchIs400AndSendsNothing() {
+        hub.attach(sink);
+        String[] bodies = {"{", "{}", "{\"events\":5}",
+                "{\"events\":[{\"t\":\"move\",\"dx\":1,\"dy\":1},{\"t\":\"jump\"}]}",
+                "{\"events\":[{\"t\":\"move\",\"dx\":1.5,\"dy\":1}]}",
+                "{\"events\":[{\"t\":\"move\",\"dx\":99999,\"dy\":1}]}",
+                "{\"events\":[{\"t\":\"move\",\"dx\":\"1\",\"dy\":1}]}",
+                "{\"events\":[{\"t\":\"down\",\"b\":\"thumb\"}]}",
+                "{\"events\":[{\"t\":\"scroll\"}]}"};
+        for (String b : bodies) assertEquals(b, 400, api.handle("POST", "/api/mouse", key(phone), b).status);
+        StringBuilder many = new StringBuilder("{\"events\":[");
+        for (int i = 0; i <= PhoneKeyboardApi.MAX_MOUSE_EVENTS; i++) {
+            if (i > 0) many.append(',');
+            many.append("{\"t\":\"move\",\"dx\":1,\"dy\":1}");
+        }
+        many.append("]}");
+        assertEquals(400, api.handle("POST", "/api/mouse", key(phone), many.toString()).status);
+        assertEquals(401, api.handle("POST", "/api/mouse", noHeaders(), "{\"events\":[]}").status);
+        assertTrue(sink.events.isEmpty());
+    }
     @Test public void api_rejectsRemovedPhone() {
         store.remove(phone.id);
         assertEquals(401, api.handle("GET", "/api/status", key(phone), "").status);

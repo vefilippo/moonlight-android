@@ -58,6 +58,34 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
   font-size: 17px; cursor: pointer;
 }
 #keys button:active { background: var(--line); }
+.tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.tabs button { min-height: 44px; border: 0; border-radius: 9px; background: transparent;
+  font-size: 16px; font-weight: 600; color: var(--muted); cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-fg); }
+[hidden] { display: none !important; }
+.view { display: flex; flex-direction: column; gap: 14px; }
+.section-label { font-size: 13px; color: var(--muted); margin: 0 0 -6px; }
+#mods, #combos { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+#mods button, #combos button, .mbtn {
+  min-height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--key);
+  font-size: 15px; cursor: pointer; padding: 0 4px;
+}
+#mods button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+#combos button:active, .mbtn:active, .mbtn.held { background: var(--line); }
+#modhint { font-size: 14px; color: var(--accent); margin: 0; min-height: 1.4em; }
+#pad {
+  position: relative; height: max(220px, calc(100vh - 390px)); border-radius: 16px;
+  background: var(--card); border: 2px dashed var(--line); touch-action: none;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  display: flex; align-items: center; justify-content: center; text-align: center;
+  color: var(--muted); font-size: 14px; padding: 16px;
+}
+#pad.active { border-color: var(--accent); }
+#mbtns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.mbtn { min-height: 64px; font-size: 16px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.speed { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 15px; }
+.speed input { flex: 1; accent-color: var(--accent); }
 #msg { min-height: 1.4em; font-size: 14px; color: var(--muted); margin: 0; }
 #msg.bad { color: var(--bad); }
 .help { font-size: 13px; color: var(--muted); margin: 0; }
@@ -70,6 +98,12 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
     <span id="status" data-state="unknown" role="status" aria-live="polite">Connecting&hellip;</span>
   </header>
 
+  <div class="tabs" role="tablist" aria-label="Mode">
+    <button type="button" role="tab" id="tab-kb" aria-selected="true" aria-controls="view-kb">Keyboard</button>
+    <button type="button" role="tab" id="tab-pad" aria-selected="false" aria-controls="view-pad">Touchpad</button>
+  </div>
+
+  <section id="view-kb" class="view" role="tabpanel" aria-labelledby="tab-kb">
   <form id="form" autocomplete="off">
     <input id="text" type="text" name="pheme-text" maxlength="4000" placeholder="Type here"
            autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false"
@@ -89,8 +123,38 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
     <button type="button" data-key="right" aria-label="Right">&rarr;</button>
   </div>
 
+  <p class="section-label">Shortcuts: tap a modifier, then a key above or a letter on your keyboard</p>
+  <div id="mods" aria-label="Modifiers">
+    <button type="button" data-mod="win" aria-pressed="false">Win</button>
+    <button type="button" data-mod="ctrl" aria-pressed="false">Ctrl</button>
+    <button type="button" data-mod="alt" aria-pressed="false">Alt</button>
+    <button type="button" data-mod="shift" aria-pressed="false">Shift</button>
+  </div>
+  <p id="modhint" aria-live="polite"></p>
+  <div id="combos" aria-label="Common shortcuts">
+    <button type="button" data-combo="win">Start</button>
+    <button type="button" data-combo="win+tab">Win+Tab</button>
+    <button type="button" data-combo="win+d">Win+D</button>
+    <button type="button" data-combo="win+e">Win+E</button>
+    <button type="button" data-combo="win+x">Win+X</button>
+    <button type="button" data-combo="alt+tab">Alt+Tab</button>
+    <button type="button" data-combo="alt+f4">Alt+F4</button>
+    <button type="button" data-combo="ctrl+shift+esc" aria-label="Task Manager (Ctrl+Shift+Esc)">Task Mgr</button>
+  </div>
+  </section>
+
+  <section id="view-pad" class="view" role="tabpanel" aria-labelledby="tab-pad" hidden>
+    <div id="pad" aria-label="Touchpad">Drag to move &middot; tap to click &middot; two-finger tap to right-click &middot; two fingers to scroll</div>
+    <div id="mbtns">
+      <button type="button" class="mbtn" data-button="left">Left</button>
+      <button type="button" class="mbtn" data-button="middle">Middle</button>
+      <button type="button" class="mbtn" data-button="right">Right</button>
+    </div>
+    <label class="speed">Speed <input id="speed" type="range" min="0.5" max="4" step="0.25" value="1.5" aria-label="Pointer speed"></label>
+  </section>
+
   <p id="msg" aria-live="polite"></p>
-  <p class="help">Nothing typed? In Apollo's web UI, allow keyboard input for this client.</p>
+  <p class="help">Nothing typed? In Apollo's web UI, allow keyboard input for this client (and mouse input for the touchpad).</p>
 </main>
 
 <script>
@@ -202,7 +266,7 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
     if (text.length > MAX) { setMsg('Too long. Send at most ' + MAX + ' characters at a time.', true); return; }
     busy = true; send.disabled = true;
     enqueue('/api/text', { text: text }).then(function (res) {
-      handleResult(res, function () { if (input.value === text) input.value = ''; });
+      handleResult(res, function () { if (input.value === text) { input.value = ''; lastValue = ''; } });
     }).catch(handleFailure).then(function () {
       busy = false; send.disabled = false; input.focus();
     });
@@ -216,7 +280,62 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
     if (!b || unpaired) return;
     var key = b.getAttribute('data-key');
     if (KEYS.indexOf(key) < 0) return;
+    var mods = armedList();
+    if (mods.length) { clearMods(); sendCombo(mods, key); return; }
     enqueue('/api/key', { key: key }).then(function (res) { handleResult(res); }).catch(handleFailure);
+  });
+
+  // Shortcuts. Armed modifiers are one-shot: they apply to the next key, then clear.
+  var MOD_ORDER = ['win', 'ctrl', 'alt', 'shift'];
+  var MOD_LABEL = { win: 'Win', ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift' };
+  var armed = {};
+  var modsEl = $('mods'), modHint = $('modhint');
+  function armedList() { return MOD_ORDER.filter(function (m) { return armed[m]; }); }
+  function renderMods() {
+    var list = armedList();
+    Array.prototype.forEach.call(modsEl.querySelectorAll('button[data-mod]'), function (b) {
+      b.setAttribute('aria-pressed', armed[b.getAttribute('data-mod')] ? 'true' : 'false');
+    });
+    modHint.textContent = list.length
+      ? list.map(function (m) { return MOD_LABEL[m]; }).join(' + ') + ' + … tap a key or type a letter'
+      : '';
+  }
+  function clearMods() { armed = {}; renderMods(); }
+  function sendCombo(mods, key) {
+    if (unpaired) return;
+    var payload = { mods: mods };
+    if (key) payload.key = key;
+    enqueue('/api/combo', payload).then(function (res) { handleResult(res); }).catch(handleFailure);
+  }
+  modsEl.addEventListener('mousedown', function (e) { e.preventDefault(); });
+  modsEl.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('button[data-mod]') : null;
+    if (!b) return;
+    var m = b.getAttribute('data-mod');
+    armed[m] = !armed[m];
+    renderMods();
+  });
+  var combosEl = $('combos');
+  combosEl.addEventListener('mousedown', function (e) { e.preventDefault(); });
+  combosEl.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('button[data-combo]') : null;
+    if (!b) return;
+    var parts = b.getAttribute('data-combo').split('+');
+    var mods = parts.filter(function (p) { return MOD_ORDER.indexOf(p) >= 0; });
+    var key = parts.filter(function (p) { return MOD_ORDER.indexOf(p) < 0; })[0];
+    clearMods();
+    sendCombo(mods, key);
+  });
+
+  // While a modifier is armed, a character typed in the box becomes the shortcut key instead of text.
+  var lastValue = input.value;
+  input.addEventListener('input', function () {
+    var mods = armedList();
+    if (!mods.length) { lastValue = input.value; return; }
+    var v = input.value, pos = input.selectionStart || v.length;
+    var ch = v.length === lastValue.length + 1 ? v.charAt(pos - 1) : '';
+    input.value = lastValue;
+    if (/^[A-Za-z0-9 .]$/.test(ch)) { clearMods(); sendCombo(mods, ch === ' ' ? 'space' : ch.toLowerCase()); }
   });
 
   // Password mode: only flips the input type/attributes; the text stays in the field, nowhere else.
@@ -232,6 +351,157 @@ button { font: inherit; color: var(--fg); touch-action: manipulation; }
     applyPw(pw.checked);
     try { localStorage.setItem('pheme-pw', pw.checked ? '1' : '0'); } catch (e) { /* ignore */ }
     input.focus();
+  });
+
+  // Tabs
+  var tabKb = $('tab-kb'), tabPad = $('tab-pad'), viewKb = $('view-kb'), viewPad = $('view-pad');
+  function showTab(pad) {
+    tabKb.setAttribute('aria-selected', pad ? 'false' : 'true');
+    tabPad.setAttribute('aria-selected', pad ? 'true' : 'false');
+    viewKb.hidden = pad; viewPad.hidden = !pad;
+    if (pad) input.blur();
+    try { localStorage.setItem('pheme-tab', pad ? 'pad' : 'kb'); } catch (e) { /* ignore */ }
+  }
+  tabKb.addEventListener('click', function () { showTab(false); });
+  tabPad.addEventListener('click', function () { showTab(true); });
+  try { if (localStorage.getItem('pheme-tab') === 'pad') showTab(true); } catch (e) { /* ignore */ }
+
+  // Touchpad. Mouse events go on their own channel (not behind queued typing): one request in
+  // flight at a time, carrying every event since the last one, with consecutive moves merged.
+  var MOUSE_TIMEOUT_MS = 2000, MAX_DELTA = 4000, MAX_SCROLL = 1200, MAX_EVENTS = 64;
+  var TAP_MS = 250, TAP_SLOP = 10, SCROLL_GAIN = 4;
+  var pending = [], accX = 0, accY = 0, accScroll = 0, mouseBusy = false;
+  var speedEl = $('speed'), speed = 1.5;
+  try { var s = parseFloat(localStorage.getItem('pheme-speed')); if (s >= 0.5 && s <= 4) speed = s; } catch (e) { /* ignore */ }
+  speedEl.value = String(speed);
+  speedEl.addEventListener('input', function () {
+    speed = parseFloat(speedEl.value) || 1.5;
+    try { localStorage.setItem('pheme-speed', String(speed)); } catch (e) { /* ignore */ }
+  });
+
+  function clamp(v, lim) { return Math.max(-lim, Math.min(lim, v)); }
+  function takeMove() {
+    var dx = clamp(Math.trunc(accX), MAX_DELTA), dy = clamp(Math.trunc(accY), MAX_DELTA);
+    if (!dx && !dy) return;
+    accX -= dx; accY -= dy;
+    var last = pending[pending.length - 1];
+    if (last && last.t === 'move' && Math.abs(last.dx + dx) <= MAX_DELTA && Math.abs(last.dy + dy) <= MAX_DELTA) {
+      last.dx += dx; last.dy += dy;
+    } else {
+      pending.push({ t: 'move', dx: dx, dy: dy });
+    }
+  }
+  function takeScroll() {
+    var v = clamp(Math.trunc(accScroll), MAX_SCROLL);
+    if (!v) return;
+    accScroll -= v;
+    var last = pending[pending.length - 1];
+    if (last && last.t === 'scroll' && Math.abs(last.v + v) <= MAX_SCROLL) last.v += v;
+    else pending.push({ t: 'scroll', v: v });
+  }
+  function mouseEvent(ev) { takeMove(); takeScroll(); pending.push(ev); flushMouse(); }
+  function flushMouse() {
+    if (mouseBusy || unpaired) return;
+    takeMove(); takeScroll();
+    if (!pending.length) return;
+    var batch = pending.splice(0, MAX_EVENTS);
+    mouseBusy = true;
+    var ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    var opts = { method: 'POST', cache: 'no-store',
+      headers: { 'X-Pheme-Key': secret, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: batch }) };
+    if (ctl) opts.signal = ctl.signal;
+    var tid = ctl ? setTimeout(function () { ctl.abort(); }, MOUSE_TIMEOUT_MS) : null;
+    fetch('/api/mouse', opts).then(function (r) {
+      if (tid) clearTimeout(tid);
+      mouseBusy = false;
+      if (r.status === 401) { showUnpaired(); return; }
+      if (r.status === 200) { setStatus('ready', TEXT.ready); flushMouse(); return; }
+      pending = []; accX = accY = accScroll = 0;  // stale movement isn't worth replaying
+      if (r.status === 409) setStatus('waiting', TEXT.waiting);
+      else setMsg('Pheme did not accept that (' + r.status + ').', true);
+    }, function () {
+      if (tid) clearTimeout(tid);
+      mouseBusy = false;
+      pending = []; accX = accY = accScroll = 0;
+      setStatus('error', TEXT.unreachable);
+    });
+  }
+  function click(button) {
+    mouseEvent({ t: 'down', b: button });
+    mouseEvent({ t: 'up', b: button });
+  }
+
+  var pad = $('pad');
+  var touches = {}, count = 0, maxCount = 0, startTime = 0, moved = false;
+  function centroid() {
+    var x = 0, y = 0, n = 0;
+    for (var id in touches) { x += touches[id].x; y += touches[id].y; n++; }
+    return n ? { x: x / n, y: y / n } : null;
+  }
+  var lastCentroid = null;
+  pad.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    input.blur();
+    try { pad.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    if (count === 0) { maxCount = 0; moved = false; startTime = Date.now(); pad.classList.add('active'); }
+    touches[e.pointerId] = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY };
+    count++;
+    maxCount = Math.max(maxCount, count);
+    lastCentroid = centroid();
+  });
+  pad.addEventListener('pointermove', function (e) {
+    var t = touches[e.pointerId];
+    if (!t) return;
+    e.preventDefault();
+    t.x = e.clientX; t.y = e.clientY;
+    if (Math.abs(t.x - t.sx) > TAP_SLOP || Math.abs(t.y - t.sy) > TAP_SLOP) moved = true;
+    var c = centroid();
+    if (!lastCentroid) { lastCentroid = c; return; }
+    var dx = c.x - lastCentroid.x, dy = c.y - lastCentroid.y;
+    lastCentroid = c;
+    if (count === 1) {
+      // Mild acceleration: quick flicks travel further than slow, precise moves.
+      var mult = speed * (1 + Math.min(Math.hypot(dx, dy) / 12, 2));
+      accX += dx * mult; accY += dy * mult;
+    } else if (count === 2) {
+      accScroll += dy * SCROLL_GAIN;  // natural scrolling, like the phone itself
+    }
+    flushMouse();
+  });
+  function endPointer(e) {
+    if (!touches[e.pointerId]) return;
+    delete touches[e.pointerId];
+    count--;
+    lastCentroid = centroid();
+    if (count > 0) return;
+    pad.classList.remove('active');
+    if (e.type === 'pointerup' && !moved && Date.now() - startTime < TAP_MS) {
+      click(maxCount >= 3 ? 'middle' : maxCount === 2 ? 'right' : 'left');
+    }
+  }
+  pad.addEventListener('pointerup', endPointer);
+  pad.addEventListener('pointercancel', endPointer);
+  pad.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+  // Buttons are held for as long as the finger stays down, so one thumb can drag while another moves.
+  Array.prototype.forEach.call(document.querySelectorAll('.mbtn'), function (b) {
+    var button = b.getAttribute('data-button'), down = false;
+    function release() {
+      if (!down) return;
+      down = false; b.classList.remove('held');
+      mouseEvent({ t: 'up', b: button });
+    }
+    b.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      try { b.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      if (down || unpaired) return;
+      down = true; b.classList.add('held');
+      mouseEvent({ t: 'down', b: button });
+    });
+    b.addEventListener('pointerup', release);
+    b.addEventListener('pointercancel', release);
+    b.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   });
 
   startPolling();

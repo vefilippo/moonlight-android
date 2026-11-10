@@ -34,6 +34,7 @@ public class PhoneKeyboardPageTest {
         assertFalse("no external resources", html.matches("(?s).*(src|href)=\"https?://.*"));
         assertFalse("no url() or http refs", html.contains("http://") || html.contains("https://"));
         assertTrue(html.contains("/api/text")); assertTrue(html.contains("/api/key")); assertTrue(html.contains("/api/status"));
+        assertTrue(html.contains("/api/combo")); assertTrue(html.contains("/api/mouse"));
         assertTrue(html.contains("X-Pheme-Key"));
         for (String k : new String[]{"enter","backspace","tab","esc","left","up","down","right"}) assertTrue(k, html.contains("'" + k + "'"));
         assertTrue(html.contains("allow keyboard input for this client"));

@@ -16,8 +16,28 @@ public class RecordingSink implements TypingSink {
     }
 
     @Override
+    public void sendCombo(byte modifiers, short vk) {
+        record("combo:" + (int) modifiers + ":" + (int) vk);
+    }
+
+    @Override
     public void sendText(String text) {
         record("text:" + text);
+    }
+
+    @Override
+    public void sendMouseMove(short dx, short dy) {
+        record("move:" + dx + ":" + dy);
+    }
+
+    @Override
+    public void sendMouseButton(byte button, boolean down) {
+        record((down ? "down:" : "up:") + (int) button);
+    }
+
+    @Override
+    public void sendMouseScroll(short amount) {
+        record("scroll:" + amount);
     }
 
     private void record(String event) {

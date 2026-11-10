@@ -1,20 +1,29 @@
 package com.limelight.phonekeyboard;
 
+import com.limelight.nvstream.input.MouseButtonPacket;
+
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
  * Request handling for the phone keyboard server, independent of the HTTP transport.
- * Only the exact routes below are served; every typing route requires a paired phone's key.
+ * Only the exact routes below are served; every typing and mouse route requires a paired phone's key.
  * Request text is never logged or put in exception messages.
  */
 public final class PhoneKeyboardApi {
     public static final int MAX_TEXT_CHARS = 4000;
     public static final String KEY_HEADER = "x-pheme-key";
+    public static final int MAX_MOUSE_EVENTS = 64;
+    /** Largest relative move accepted in one event, in pixels. */
+    public static final int MAX_MOUSE_DELTA = 4000;
+    /** Largest scroll accepted in one event (120 = one wheel notch). */
+    public static final int MAX_SCROLL = 1200;
 
     private static final String HTML = "text/html";
     private static final String JSON = "application/json";
@@ -53,6 +62,8 @@ public final class PhoneKeyboardApi {
         }
         if (post && path.equals("/api/text")) return text(headers, body);
         if (post && path.equals("/api/key")) return key(headers, body);
+        if (post && path.equals("/api/combo")) return combo(headers, body);
+        if (post && path.equals("/api/mouse")) return mouse(headers, body);
         return notFound();
     }
 
@@ -98,6 +109,100 @@ public final class PhoneKeyboardApi {
         if (!hub.press(key)) return json(409, error("waiting"));
         store.markUsed(phone.id);
         return json(200, okBody());
+    }
+
+    /** {"mods":["win","ctrl","alt","shift"], "key":"tab"}; key may be omitted to tap only the modifiers. */
+    private ApiResponse combo(Map<String, String> headers, String body) {
+        PairedPhone phone = authenticate(headers);
+        if (phone == null) return json(401, error("unauthorized"));
+        JSONObject obj = parse(body);
+        if (obj == null) return json(400, error("bad request"));
+        byte mods = 0;
+        JSONArray modList = obj.optJSONArray("mods");
+        if (modList != null) {
+            for (int i = 0; i < modList.length(); i++) {
+                Object m = modList.opt(i);
+                byte flag = m instanceof String ? ComboKeys.modifierFlag((String) m) : 0;
+                if (flag == 0) return json(400, error("bad request"));
+                mods |= flag;
+            }
+        } else if (obj.has("mods")) {
+            return json(400, error("bad request"));
+        }
+        int vk = 0;
+        if (obj.has("key")) {
+            Object k = obj.opt("key");
+            vk = k instanceof String ? ComboKeys.vkFor((String) k) : -1;
+            if (vk < 0) return json(400, error("bad request"));
+        }
+        if (mods == 0 && vk == 0) return json(400, error("bad request"));
+        if (!hub.combo(mods, (short) vk)) return json(409, error("waiting"));
+        store.markUsed(phone.id);
+        return json(200, okBody());
+    }
+
+    /**
+     * {"events":[{"t":"move","dx":3,"dy":-2}, {"t":"down","b":"left"}, {"t":"up","b":"left"},
+     * {"t":"scroll","v":-120}]}. Events run in order; any invalid event rejects the whole batch.
+     */
+    private ApiResponse mouse(Map<String, String> headers, String body) {
+        PairedPhone phone = authenticate(headers);
+        if (phone == null) return json(401, error("unauthorized"));
+        JSONObject obj = parse(body);
+        JSONArray events = obj == null ? null : obj.optJSONArray("events");
+        if (events == null || events.length() > MAX_MOUSE_EVENTS) return json(400, error("bad request"));
+        List<MouseAction> actions = new ArrayList<>(events.length());
+        boolean buttons = false;
+        for (int i = 0; i < events.length(); i++) {
+            MouseAction a = parseMouse(events.optJSONObject(i));
+            if (a == null) return json(400, error("bad request"));
+            if (a.kind() != MouseAction.Kind.MOVE) buttons = true;
+            actions.add(a);
+        }
+        if (!hub.mouse(actions)) return json(409, error("waiting"));
+        // Moves arrive many times a second; only clicks and scrolls count as "used".
+        if (buttons) store.markUsed(phone.id);
+        return json(200, okBody());
+    }
+
+    private static MouseAction parseMouse(JSONObject e) {
+        if (e == null) return null;
+        String t = e.optString("t", "");
+        switch (t) {
+            case "move": {
+                Integer dx = boundedInt(e, "dx", MAX_MOUSE_DELTA);
+                Integer dy = boundedInt(e, "dy", MAX_MOUSE_DELTA);
+                if (dx == null || dy == null) return null;
+                return MouseAction.move((short) (int) dx, (short) (int) dy);
+            }
+            case "down":
+            case "up": {
+                byte b = mouseButton(e.opt("b"));
+                return b == 0 ? null : MouseAction.button(b, t.equals("down"));
+            }
+            case "scroll": {
+                Integer v = boundedInt(e, "v", MAX_SCROLL);
+                return v == null ? null : MouseAction.scroll((short) (int) v);
+            }
+            default:
+                return null;
+        }
+    }
+
+    /** An integer field within [-limit, limit], or null if missing, not a whole number or out of range. */
+    private static Integer boundedInt(JSONObject e, String name, int limit) {
+        Object v = e.opt(name);
+        if (!(v instanceof Number)) return null;
+        double d = ((Number) v).doubleValue();
+        if (d != Math.rint(d) || Math.abs(d) > limit) return null;
+        return (int) d;
+    }
+
+    private static byte mouseButton(Object name) {
+        if ("left".equals(name)) return MouseButtonPacket.BUTTON_LEFT;
+        if ("right".equals(name)) return MouseButtonPacket.BUTTON_RIGHT;
+        if ("middle".equals(name)) return MouseButtonPacket.BUTTON_MIDDLE;
+        return 0;
     }
 
     private PairedPhone authenticate(Map<String, String> headers) {

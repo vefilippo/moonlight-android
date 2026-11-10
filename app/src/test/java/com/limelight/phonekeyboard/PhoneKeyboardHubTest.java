@@ -48,6 +48,30 @@ public class PhoneKeyboardHubTest {
         assertEquals(Arrays.asList("key:" + (int) SpecialKey.ENTER.vk() + ":false"), sink.events);
     }
 
+    @Test public void comboIsQueuedAfterTyping() {
+        QueuedExecutor queued = new QueuedExecutor();
+        hub = new PhoneKeyboardHub(queued);
+        hub.attach(sink);
+        hub.type(TextSplitter.split("a"));
+        assertTrue(hub.combo((byte) 0x08, (short) 9));
+        assertTrue(sink.events.isEmpty());
+        queued.runAll();
+        assertEquals(Arrays.asList("key:65:false", "combo:8:9"), sink.events);
+    }
+
+    @Test public void mouseRunsImmediatelyInOrder() {
+        QueuedExecutor queued = new QueuedExecutor();
+        hub = new PhoneKeyboardHub(queued);
+        assertFalse(hub.mouse(Arrays.asList(MouseAction.move((short) 1, (short) 2))));
+        hub.attach(sink);
+        assertTrue(hub.mouse(Arrays.asList(
+                MouseAction.move((short) 1, (short) -2),
+                MouseAction.button((byte) 1, true),
+                MouseAction.button((byte) 1, false),
+                MouseAction.scroll((short) -120))));
+        assertEquals(Arrays.asList("move:1:-2", "down:1", "up:1", "scroll:-120"), sink.events);
+    }
+
     @Test public void hub_doesNotInterleaveTwoSends() {
         QueuedExecutor queued = new QueuedExecutor();
         hub = new PhoneKeyboardHub(queued);
