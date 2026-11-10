@@ -16,6 +16,13 @@ Next version: 1.1.0
   arrow keys are supported. Manage or remove phones in *Settings → Paired phones*. Phone and
   TV must be on the same network.
 
+### Fixed
+
+- **Green blocks after packet loss on Chromecast with Google TV** — the Amlogic HEVC/AV1 decoder
+  could keep showing corrupted green areas until a reconnect. Reference-frame invalidation is now
+  off for Amlogic decoders detected through low-latency support, so the host sends a fresh
+  keyframe instead.
+
 ## 1.0.0 — 2026-11-08
 
 First release under the name **Pheme**, based on Artemis Android 20.2.6. It follows

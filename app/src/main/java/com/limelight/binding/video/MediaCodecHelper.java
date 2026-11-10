@@ -789,8 +789,15 @@ public class MediaCodecHelper {
         // If the decoder supports FEATURE_LowLatency or any vendor low latency option,
         // we will use that as an indication that it can handle HEVC RFI without excessively
         // buffering frames.
-        if (decoderSupportsAndroidRLowLatency(decoderInfo, "video/hevc") ||
-                decoderSupportsKnownVendorLowLatencyOption(decoderInfo.getName())) {
+        //
+        // Except Amlogic: the Chromecast with Google TV (sabrina) qualifies through its low
+        // latency options, but after packet loss its HEVC decoder can keep showing corrupted
+        // (green) blocks that RFI never repairs, so the stream stays broken until a reconnect.
+        // Without RFI the host sends a fresh IDR frame instead. Fire TV Amlogic devices still
+        // get RFI through the explicit prefix list below.
+        if (!isAmlogicDecoder(decoderInfo.getName()) &&
+                (decoderSupportsAndroidRLowLatency(decoderInfo, "video/hevc") ||
+                decoderSupportsKnownVendorLowLatencyOption(decoderInfo.getName()))) {
             LimeLog.info("Enabling HEVC RFI based on low latency option support");
             return true;
         }
@@ -798,10 +805,15 @@ public class MediaCodecHelper {
         return isDecoderInList(refFrameInvalidationHevcPrefixes, decoderInfo.getName());
     }
 
+    private static boolean isAmlogicDecoder(String decoderName) {
+        return isDecoderInList(amlogicDecoderPrefixes, decoderName);
+    }
+
     public static boolean decoderSupportsRefFrameInvalidationAv1(MediaCodecInfo decoderInfo) {
-        // We'll use the same heuristics as HEVC for now
-        if (decoderSupportsAndroidRLowLatency(decoderInfo, "video/av01") ||
-                decoderSupportsKnownVendorLowLatencyOption(decoderInfo.getName())) {
+        // We'll use the same heuristics as HEVC for now (Amlogic excluded for the same reason)
+        if (!isAmlogicDecoder(decoderInfo.getName()) &&
+                (decoderSupportsAndroidRLowLatency(decoderInfo, "video/av01") ||
+                decoderSupportsKnownVendorLowLatencyOption(decoderInfo.getName()))) {
             LimeLog.info("Enabling AV1 RFI based on low latency option support");
             return true;
         }
